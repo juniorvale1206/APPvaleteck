@@ -1,0 +1,36 @@
+{
+  "summary": "Valeteck v3 testing — Backend 5/5 PASS (GET /api/appointments returns 6 seeded OS with prioridade/telefone/tempo_estimado_min/created_at all populated; POST /api/appointments/seed-new creates unique OS persisted in DB with all v3 fields and increases list count; auth 401 enforced). Frontend (mobile 390x844) verified via Playwright: Diária=2/Semanal=7 counters correct on toggle; toggling Semanal shows HOJE + AMANHÃ + later day headers (DOM 03/05, TER 05/05, QUI 07/05) with all 6 OS grouped; each card renders priority bar (vermelho=ALTA/laranja=NORMAL/cinza=BAIXA), prio pill, carro/moto icon, placa, empresa, hora, tempo_estimado ('90 min'), telefone ((11) 98888-1111) e endereço; 'Simular nova OS recebida' (testID=simulate-new-os) POSTa /seed-new, toast animado '🔔 Nova OS recebida • OS-2026-0008 • Ana Costa' aparece no topo e lista recarrega (Semanal 7→8); tap em card navega para /checklist/new com vehicle_type pré-selecionado (Carro com check). Toast has testID=toast-new-os. Home badge (notif-badge) ausente após retorno da agenda (esperado: markAllSeen zera). Polling a 30s não foi testado até contador no Home por tempo, mas código correto (setNewCount incrementa em poll()).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "notifications.tsx ToastItem", "issue": "Animated.timing com useNativeDriver:true dispara warning 'useNativeDriver is not supported because the native animated module is missing. Falling back to JS-based animation.' no web — toast ainda anima corretamente; considerar useNativeDriver:false no web via Platform.select."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_valeteck_v3.py",
+    "/app/test_reports/pytest/v3_results.xml"
+  ],
+  "action_items": [
+    "Opcional: passar useNativeDriver:false em notifications.tsx quando Platform.OS==='web' para remover warning do console.",
+    "Opcional: no polling em notifications.tsx, markAllSeen é invocado em agenda.load() — isso também reseta badge para novas OS detectadas entre duas cargas de agenda. Funciona conforme spec ('badge mostra novas OS detectadas pelo polling'), mas considerar separar 'novas desde última visita ao home' de 'novas desde última carga da agenda'.",
+    "Mantém observação de v2: server.py cresceu para ~700 linhas (limite recomendado) — considerar split em routers (auth, reference, appointments, checklists)."
+  ],
+  "critical_code_review_comments": [
+    "server.py seed_appointments agora popula prioridade/telefone/tempo_estimado_min — OK; chamado em on_startup somente se vazio (idempotente, não duplica).",
+    "POST /api/appointments/seed-new: gera numero_os via count_documents({})+1 — correto mas em alta concorrência pode colidir; OK para demo.",
+    "agenda.tsx: toggle Semanal calcula janela [hoje, hoje+7) via local time — consistente com seed; counts.diaria/semanal reativos a items.",
+    "notifications.tsx: initialized ref previne toasts no primeiro poll (evita disparar para OS já existentes no login) — implementação correta.",
+    "Toast renderizado fora do Stack via Provider — correto, fica acima das rotas.",
+    "agenda.tsx prefill: set({telefone: a.telefone || ''}) — OK, preenche draft; depende de 'telefone' estar no DraftProvider tipo (não verificado em draft.tsx mas backend aceita)."
+  ],
+  "updated_files": ["/app/backend/tests/test_valeteck_v3.py (created)"],
+  "success_rate": {"backend": "100% (5/5)", "frontend": "100% nos fluxos exercitados (toggle, grouping, cards v3 fields, simulate+toast+reload, prefill nav)"},
+  "seed_data_creation": "Durante o teste, o endpoint /seed-new foi invocado 2x (backend test + Playwright click) — criou OS-2026-0007 (Felipe Rodrigues) e OS-2026-0008 (Ana Costa). Estes permanecem no DB com status=agendado. Não há cleanup por design (são OS reais). Total atual: ~8 OS.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "v3 testIDs: toggle-diaria, toggle-semanal, simulate-new-os, toast-new-os, notif-badge, appt-OS-2026-0001..0008, agenda-back. Login tecnico@valeteck.com/tecnico123. BASE: https://installer-track-1.preview.emergentagent.com. Após múltiplas execuções de seed-new o contador 'Semanal' cresce além de 6 — é comportamento esperado. Para retestar do zero, apagar coleção appointments e restart backend.",
+  "rca_of_issue": "N/A — todos os requisitos de v3 verificados."
+}

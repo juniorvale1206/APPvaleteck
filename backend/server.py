@@ -311,6 +311,10 @@ class AppointmentOut(BaseModel):
     status: str  # agendado | em_andamento | concluido
     checklist_id: Optional[str] = None
     vehicle_type: Optional[str] = ""
+    prioridade: str = "normal"  # alta | normal | baixa
+    telefone: Optional[str] = ""
+    tempo_estimado_min: Optional[int] = 60
+    created_at: Optional[str] = None
 
 
 @api.get("/appointments", response_model=List[AppointmentOut])
@@ -324,6 +328,54 @@ async def get_appointment(aid: str, user=Depends(get_current_user)):
     doc = await db.appointments.find_one({"id": aid, "user_id": user["id"]}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Agendamento não encontrado")
+    return doc
+
+
+@api.post("/appointments/seed-new", response_model=AppointmentOut)
+async def seed_new_appointment(user=Depends(get_current_user)):
+    """Demo: gera uma nova OS aleatória agendada para hoje/amanhã. Útil para testar alertas."""
+    import random
+    nomes = [
+        ("Pedro", "Almeida"), ("Lucas", "Pereira"), ("Ana", "Costa"), ("Beatriz", "Martins"),
+        ("Felipe", "Rodrigues"), ("Juliana", "Ferreira"), ("Rafael", "Santos"), ("Camila", "Oliveira"),
+    ]
+    enderecos = [
+        "Av. Brigadeiro Faria Lima, 3000 - São Paulo/SP",
+        "R. Augusta, 1500 - São Paulo/SP",
+        "Av. Atlântica, 800 - Rio de Janeiro/RJ",
+        "Rua XV de Novembro, 200 - Curitiba/PR",
+        "Av. Beira Mar, 450 - Florianópolis/SC",
+    ]
+    placas = ["XPT1A23", "QWE4B56", "ASD7C89", "ZXC1D45", "JKL3F67"]
+    empresas_random = random.choice(COMPANIES)
+    nome_sob = random.choice(nomes)
+    horas_offset = random.choice([1, 3, 6, 24, 28])
+    prioridade = random.choices(["alta", "normal", "baixa"], weights=[2, 5, 3])[0]
+    eta = random.choice([45, 60, 90, 120])
+    tipo_v = random.choice(["carro", "moto"])
+    now = datetime.now(timezone.utc)
+    aid = str(uuid.uuid4())
+    nro_seq = await db.appointments.count_documents({}) + 1
+    doc = {
+        "id": aid,
+        "user_id": user["id"],
+        "numero_os": f"OS-2026-{nro_seq:04d}",
+        "cliente_nome": nome_sob[0],
+        "cliente_sobrenome": nome_sob[1],
+        "placa": random.choice(placas),
+        "empresa": empresas_random,
+        "endereco": random.choice(enderecos),
+        "scheduled_at": (now + timedelta(hours=horas_offset)).isoformat(),
+        "status": "agendado",
+        "checklist_id": None,
+        "vehicle_type": tipo_v,
+        "prioridade": prioridade,
+        "telefone": f"(11) 9{random.randint(1000,9999)}-{random.randint(1000,9999)}",
+        "tempo_estimado_min": eta,
+        "created_at": now.isoformat(),
+    }
+    await db.appointments.insert_one(doc)
+    doc.pop("_id", None)
     return doc
 
 
@@ -546,13 +598,28 @@ async def seed_appointments(user_id: str):
     samples = [
         {"numero_os": "OS-2026-0001", "cliente_nome": "Carlos", "cliente_sobrenome": "Mendes",
          "placa": "ABC1D23", "empresa": "Rastremix", "endereco": "Av. Paulista, 1000 - São Paulo/SP",
-         "scheduled_at": (now + timedelta(hours=2)).isoformat(), "vehicle_type": "carro"},
+         "scheduled_at": (now + timedelta(hours=2)).isoformat(), "vehicle_type": "carro",
+         "prioridade": "alta", "telefone": "(11) 98888-1111", "tempo_estimado_min": 90},
         {"numero_os": "OS-2026-0002", "cliente_nome": "Mariana", "cliente_sobrenome": "Souza",
          "placa": "DEF2G45", "empresa": "Telensat", "endereco": "Rua das Flores, 250 - Campinas/SP",
-         "scheduled_at": (now + timedelta(hours=5)).isoformat(), "vehicle_type": "moto"},
+         "scheduled_at": (now + timedelta(hours=5)).isoformat(), "vehicle_type": "moto",
+         "prioridade": "normal", "telefone": "(11) 97777-2222", "tempo_estimado_min": 60},
         {"numero_os": "OS-2026-0003", "cliente_nome": "Roberto", "cliente_sobrenome": "Lima",
          "placa": "GHI3J67", "empresa": "Valeteck", "endereco": "Rod. Anhanguera, km 25 - Jundiaí/SP",
-         "scheduled_at": (now + timedelta(days=1)).isoformat(), "vehicle_type": "carro"},
+         "scheduled_at": (now + timedelta(days=1)).isoformat(), "vehicle_type": "carro",
+         "prioridade": "normal", "telefone": "(11) 96666-3333", "tempo_estimado_min": 120},
+        {"numero_os": "OS-2026-0004", "cliente_nome": "Fernanda", "cliente_sobrenome": "Castro",
+         "placa": "MNO4K89", "empresa": "GPS My", "endereco": "Av. Independência, 540 - Santo André/SP",
+         "scheduled_at": (now + timedelta(days=2)).isoformat(), "vehicle_type": "carro",
+         "prioridade": "baixa", "telefone": "(11) 95555-4444", "tempo_estimado_min": 60},
+        {"numero_os": "OS-2026-0005", "cliente_nome": "Diego", "cliente_sobrenome": "Vieira",
+         "placa": "PQR5L01", "empresa": "Topy Pro", "endereco": "R. da Consolação, 2200 - São Paulo/SP",
+         "scheduled_at": (now + timedelta(days=4, hours=3)).isoformat(), "vehicle_type": "moto",
+         "prioridade": "alta", "telefone": "(11) 94444-5555", "tempo_estimado_min": 45},
+        {"numero_os": "OS-2026-0006", "cliente_nome": "Patrícia", "cliente_sobrenome": "Nunes",
+         "placa": "STU6M23", "empresa": "GPS Joy", "endereco": "Av. Paulista, 2500 - São Paulo/SP",
+         "scheduled_at": (now + timedelta(days=6)).isoformat(), "vehicle_type": "carro",
+         "prioridade": "normal", "telefone": "(11) 93333-6666", "tempo_estimado_min": 75},
     ]
     for s in samples:
         await db.appointments.insert_one({
@@ -560,6 +627,7 @@ async def seed_appointments(user_id: str):
             "user_id": user_id,
             "status": "agendado",
             "checklist_id": None,
+            "created_at": now.isoformat(),
             **s,
         })
     logger.info(f"Seeded {len(samples)} appointments for user {user_id}")

@@ -15,6 +15,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api, apiErrorMessage, type Checklist } from "../../src/api";
 import { useAuth } from "../../src/auth";
 import { useDraft } from "../../src/draft";
+import { useNotifications } from "../../src/notifications";
 import { Btn, EmptyState, StatusBadge } from "../../src/components";
 import { colors, fonts, radii, space } from "../../src/theme";
 
@@ -22,6 +23,7 @@ export default function Home() {
   const router = useRouter();
   const { user } = useAuth();
   const { reset } = useDraft();
+  const { newCount } = useNotifications();
   const [items, setItems] = useState<Checklist[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -88,6 +90,11 @@ export default function Home() {
         <View style={{ flexDirection: "row", gap: 6 }}>
           <TouchableOpacity testID="agenda-button" onPress={() => router.push("/(app)/agenda")} style={styles.iconBtn}>
             <Ionicons name="calendar-outline" size={26} color={colors.primary} />
+            {newCount > 0 && (
+              <View style={styles.notifBadge} testID="notif-badge">
+                <Text style={styles.notifBadgeTxt}>{newCount > 9 ? "9+" : newCount}</Text>
+              </View>
+            )}
           </TouchableOpacity>
           <TouchableOpacity testID="profile-button" onPress={() => router.push("/(app)/profile")} style={styles.iconBtn}>
             <Ionicons name="person-circle-outline" size={28} color={colors.primary} />
@@ -172,7 +179,9 @@ const styles = StyleSheet.create({
   },
   hello: { color: colors.textMuted, fontSize: fonts.size.sm },
   headerTitle: { color: colors.text, fontSize: fonts.size.xxl, fontWeight: "900" },
-  iconBtn: { padding: 6 },
+  iconBtn: { padding: 6, position: "relative" },
+  notifBadge: { position: "absolute", top: 0, right: 0, backgroundColor: colors.danger, borderRadius: 999, minWidth: 18, height: 18, paddingHorizontal: 5, alignItems: "center", justifyContent: "center", borderWidth: 2, borderColor: colors.bg },
+  notifBadgeTxt: { color: "#fff", fontSize: 10, fontWeight: "900" },
   agendaBanner: { marginHorizontal: space.lg, marginBottom: space.sm, backgroundColor: colors.primary, borderRadius: radii.md, padding: space.md, flexDirection: "row", alignItems: "center", gap: 12 },
   agendaTitle: { color: colors.onPrimary, fontWeight: "900", fontSize: fonts.size.md },
   agendaSub: { color: colors.onPrimary, fontSize: fonts.size.xs, opacity: 0.8 },
