@@ -82,6 +82,9 @@ async def get_current_user(
 # ----------------- Constants -----------------
 COMPANIES = ["Rastremix", "GPS My", "GPS Joy", "Topy Pro", "Telensat", "Valeteck"]
 SERVICE_TYPES = ["Instalação", "Manutenção", "Retirada", "Garantia"]
+VEHICLE_TYPES = ["carro", "moto"]
+BATTERY_STATES = ["Nova", "Em bom estado", "Usada", "Apresentando falhas"]
+
 EQUIPMENTS = [
     "Rastreador GPS XT-2000",
     "Rastreador GPS Plus",
@@ -90,17 +93,34 @@ EQUIPMENTS = [
     "Rastreador Híbrido GSM/GPS",
     "Bloqueador Anti-Furto BR-9",
 ]
-ACCESSORIES = [
-    "Sirene",
-    "Bloqueio de Combustível",
-    "Botão de Pânico",
-    "Sensor de Porta",
-    "Antena Externa",
-    "Bateria Backup",
-    "Microfone Espião",
-    "Lacre Anti-Violação",
-    "Chicote Especial",
-    "Conector OBD",
+ACCESSORIES_CARRO = [
+    "Alarme e travas", "Vidros elétricos", "Painel", "Ar condicionado",
+    "Som / Central multimídia", "Buzina e sirene", "Limpador de para-brisa",
+    "Lanterna traseira direita", "Lanterna traseira esquerda", "Freio de mão",
+    "Banco elétrico", "Piscas alerta", "Farol alto/baixo direito",
+    "Farol alto/baixo esquerdo", "Luz de ré", "Luz de freio / Brake light",
+    "Sensor de porta", "Botão de pânico", "Bloqueio de combustível",
+    "Lacre anti-violação", "Antena externa",
+]
+ACCESSORIES_MOTO = [
+    "Painel de instrumentos", "Farol alto/baixo", "Lanterna traseira",
+    "Luz de freio", "Pisca esquerdo dianteiro", "Pisca esquerdo traseiro",
+    "Pisca direito dianteiro", "Pisca direito traseiro", "Buzina",
+    "Carenagem esquerda", "Carenagem direita", "Retrovisor esquerdo",
+    "Retrovisor direito", "Bateria", "Sirene", "Bloqueio de combustível",
+    "Lacre anti-violação",
+]
+PROBLEMS_CLIENT = [
+    "Bateria fraca", "Não liga", "Vidro elétrico não funciona",
+    "Painel com falha", "Som não liga", "Ar condicionado não gela",
+    "Trava elétrica com defeito", "Farol queimado", "Pisca não funciona",
+    "Buzina sem som", "Falha no rastreador anterior",
+]
+PROBLEMS_TECHNICIAN = [
+    "Fiação danificada", "Bateria abaixo de 11V", "Curto-circuito identificado",
+    "Conector OBD com falha", "Corrosão em terminais", "Fusível queimado",
+    "Chicote com mau contato", "Lacre violado anteriormente",
+    "Equipamento anterior com defeito", "Bateria descarregando rápido",
 ]
 CHECKLIST_STATUSES = ["rascunho", "enviado", "em_auditoria", "aprovado", "reprovado"]
 
@@ -142,24 +162,34 @@ class PhotoIn(BaseModel):
 
 
 class ChecklistInput(BaseModel):
+    # Veículo
+    vehicle_type: Optional[str] = ""  # carro | moto
     # Cliente
     nome: str
     sobrenome: str
     placa: str
     telefone: Optional[str] = ""
     obs_iniciais: Optional[str] = ""
+    problems_client: List[str] = []
+    problems_client_other: Optional[str] = ""
     # Instalação
     empresa: str
     equipamento: str
     tipo_atendimento: Optional[str] = ""
     acessorios: List[str] = []
     obs_tecnicas: Optional[str] = ""
+    problems_technician: List[str] = []
+    problems_technician_other: Optional[str] = ""
+    battery_state: Optional[str] = ""  # Nova | Em bom estado | Usada | Apresentando falhas
+    battery_voltage: Optional[float] = None  # in Volts
     # Evidências
     photos: List[PhotoIn] = []
-    location: Optional[dict] = None  # {lat,lng} or null
+    location: Optional[dict] = None
     location_available: bool = False
     # Assinatura
     signature_base64: Optional[str] = ""
+    # Vínculo agenda
+    appointment_id: Optional[str] = ""
     # Estado
     status: str = "rascunho"  # rascunho | enviado
 
@@ -169,20 +199,28 @@ class ChecklistOut(BaseModel):
     numero: str
     user_id: str
     status: str
+    vehicle_type: Optional[str] = ""
     nome: str
     sobrenome: str
     placa: str
     telefone: Optional[str] = ""
     obs_iniciais: Optional[str] = ""
+    problems_client: List[str] = []
+    problems_client_other: Optional[str] = ""
     empresa: str
     equipamento: str
     tipo_atendimento: Optional[str] = ""
     acessorios: List[str] = []
     obs_tecnicas: Optional[str] = ""
+    problems_technician: List[str] = []
+    problems_technician_other: Optional[str] = ""
+    battery_state: Optional[str] = ""
+    battery_voltage: Optional[float] = None
     photos: List[PhotoIn] = []
     location: Optional[dict] = None
     location_available: bool = False
     signature_base64: Optional[str] = ""
+    appointment_id: Optional[str] = ""
     alerts: List[str] = []
     created_at: str
     updated_at: str
@@ -236,13 +274,57 @@ async def list_equipments():
 
 
 @api.get("/reference/accessories")
-async def list_accessories():
-    return {"accessories": ACCESSORIES}
+async def list_accessories(vehicle_type: Optional[str] = None):
+    if vehicle_type == "moto":
+        return {"accessories": ACCESSORIES_MOTO}
+    if vehicle_type == "carro":
+        return {"accessories": ACCESSORIES_CARRO}
+    return {"accessories": list(dict.fromkeys(ACCESSORIES_CARRO + ACCESSORIES_MOTO))}
 
 
 @api.get("/reference/service-types")
 async def list_service_types():
     return {"service_types": SERVICE_TYPES}
+
+
+@api.get("/reference/battery-states")
+async def list_battery_states():
+    return {"battery_states": BATTERY_STATES}
+
+
+@api.get("/reference/problems")
+async def list_problems():
+    return {"client": PROBLEMS_CLIENT, "technician": PROBLEMS_TECHNICIAN}
+
+
+# ----------------- Appointments (Agenda) -----------------
+class AppointmentOut(BaseModel):
+    id: str
+    user_id: str
+    numero_os: str
+    cliente_nome: str
+    cliente_sobrenome: str
+    placa: str
+    empresa: str
+    endereco: str
+    scheduled_at: str
+    status: str  # agendado | em_andamento | concluido
+    checklist_id: Optional[str] = None
+    vehicle_type: Optional[str] = ""
+
+
+@api.get("/appointments", response_model=List[AppointmentOut])
+async def list_appointments(user=Depends(get_current_user)):
+    cursor = db.appointments.find({"user_id": user["id"]}, {"_id": 0}).sort("scheduled_at", 1)
+    return await cursor.to_list(length=200)
+
+
+@api.get("/appointments/{aid}", response_model=AppointmentOut)
+async def get_appointment(aid: str, user=Depends(get_current_user)):
+    doc = await db.appointments.find_one({"id": aid, "user_id": user["id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Agendamento não encontrado")
+    return doc
 
 
 # ----------------- Checklists -----------------
@@ -344,6 +426,14 @@ async def create_checklist(payload: ChecklistInput, user=Depends(get_current_use
         "numero": numero,
         "user_id": user["id"],
         "status": status,
+        "vehicle_type": payload.vehicle_type or "",
+        "problems_client": payload.problems_client or [],
+        "problems_client_other": payload.problems_client_other or "",
+        "problems_technician": payload.problems_technician or [],
+        "problems_technician_other": payload.problems_technician_other or "",
+        "battery_state": payload.battery_state or "",
+        "battery_voltage": payload.battery_voltage,
+        "appointment_id": payload.appointment_id or "",
         "nome": payload.nome.strip(),
         "sobrenome": payload.sobrenome.strip(),
         "placa": normalize_plate(payload.placa),
@@ -366,6 +456,11 @@ async def create_checklist(payload: ChecklistInput, user=Depends(get_current_use
     }
     await db.checklists.insert_one(doc)
     doc.pop("_id", None)
+    if payload.appointment_id:
+        await db.appointments.update_one(
+            {"id": payload.appointment_id, "user_id": user["id"]},
+            {"$set": {"checklist_id": cid, "status": "concluido" if status == "enviado" else "em_andamento"}},
+        )
     return _to_out(doc)
 
 
@@ -398,6 +493,13 @@ async def update_checklist(cid: str, payload: ChecklistInput, user=Depends(get_c
     now_iso = datetime.now(timezone.utc).isoformat()
     update = {
         "status": status,
+        "vehicle_type": payload.vehicle_type or "",
+        "problems_client": payload.problems_client or [],
+        "problems_client_other": payload.problems_client_other or "",
+        "problems_technician": payload.problems_technician or [],
+        "problems_technician_other": payload.problems_technician_other or "",
+        "battery_state": payload.battery_state or "",
+        "battery_voltage": payload.battery_voltage,
         "nome": payload.nome.strip(),
         "sobrenome": payload.sobrenome.strip(),
         "placa": normalize_plate(payload.placa),
@@ -436,6 +538,33 @@ async def delete_checklist(cid: str, user=Depends(get_current_user)):
 
 
 # ----------------- Startup: indexes + seed -----------------
+async def seed_appointments(user_id: str):
+    existing = await db.appointments.count_documents({"user_id": user_id})
+    if existing > 0:
+        return
+    now = datetime.now(timezone.utc)
+    samples = [
+        {"numero_os": "OS-2026-0001", "cliente_nome": "Carlos", "cliente_sobrenome": "Mendes",
+         "placa": "ABC1D23", "empresa": "Rastremix", "endereco": "Av. Paulista, 1000 - São Paulo/SP",
+         "scheduled_at": (now + timedelta(hours=2)).isoformat(), "vehicle_type": "carro"},
+        {"numero_os": "OS-2026-0002", "cliente_nome": "Mariana", "cliente_sobrenome": "Souza",
+         "placa": "DEF2G45", "empresa": "Telensat", "endereco": "Rua das Flores, 250 - Campinas/SP",
+         "scheduled_at": (now + timedelta(hours=5)).isoformat(), "vehicle_type": "moto"},
+        {"numero_os": "OS-2026-0003", "cliente_nome": "Roberto", "cliente_sobrenome": "Lima",
+         "placa": "GHI3J67", "empresa": "Valeteck", "endereco": "Rod. Anhanguera, km 25 - Jundiaí/SP",
+         "scheduled_at": (now + timedelta(days=1)).isoformat(), "vehicle_type": "carro"},
+    ]
+    for s in samples:
+        await db.appointments.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "status": "agendado",
+            "checklist_id": None,
+            **s,
+        })
+    logger.info(f"Seeded {len(samples)} appointments for user {user_id}")
+
+
 async def seed_users():
     seeds = [
         {
