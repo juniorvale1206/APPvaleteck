@@ -1,12 +1,11 @@
 import React, { useEffect, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Image, Platform, Linking, Alert } from "react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
 import * as Sharing from "expo-sharing";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { api, apiErrorMessage, type Checklist, TOKEN_KEY } from "../../../src/api";
+import { api, apiErrorMessage, getAccessToken, type Checklist } from "../../../src/api";
 import { StatusBadge } from "../../../src/components";
 import { colors, fonts, radii, space } from "../../../src/theme";
 
@@ -39,7 +38,7 @@ export default function ChecklistDetail() {
     if (!item) return null;
     setPdfBusy(true);
     try {
-      const token = await AsyncStorage.getItem(TOKEN_KEY);
+      const token = await getAccessToken();
       const base = (process.env.EXPO_PUBLIC_BACKEND_URL as string) || "";
       const url = `${base}/api/checklists/${item.id}/pdf`;
       if (Platform.OS === "web") {
@@ -172,16 +171,16 @@ export default function ChecklistDetail() {
           <Text style={styles.cardTitle}>Fotos ({item.photos.length})</Text>
           <View style={styles.grid}>
             {item.photos.map((p, i) => (
-              <Image key={i} source={{ uri: p.base64 }} style={styles.thumb} />
+              <Image key={i} source={{ uri: p.url || p.base64 }} style={styles.thumb} />
             ))}
           </View>
         </View>
 
-        {!!item.signature_base64 && (
+        {(!!item.signature_url || !!item.signature_base64) && (
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Assinatura</Text>
             <View style={styles.sigBox}>
-              <Image source={{ uri: item.signature_base64 }} style={{ flex: 1 }} resizeMode="contain" />
+              <Image source={{ uri: item.signature_url || item.signature_base64 }} style={{ flex: 1 }} resizeMode="contain" />
             </View>
           </View>
         )}

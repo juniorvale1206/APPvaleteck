@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { api, TOKEN_KEY } from "./api";
+import { api, clearTokens, setTokens, getAccessToken, setOnSessionExpired } from "./api";
 
 type User = { id: string; email: string; name: string; role: string };
 
@@ -15,15 +14,21 @@ const Ctx = createContext<AuthCtx>({} as any);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null | undefined>(undefined);
 
+  // Registra callback global para sessão expirada (refresh falhou)
+  useEffect(() => {
+    setOnSessionExpired(() => setUser(null));
+    return () => setOnSessionExpired(null);
+  }, []);
+
   useEffect(() => {
     (async () => {
-      const token = await AsyncStorage.getItem(TOKEN_KEY);
+      const token = await getAccessToken();
       if (!token) return setUser(null);
       try {
         const { data } = await api.get("/auth/me");
         setUser(data);
       } catch {
-        await AsyncStorage.removeItem(TOKEN_KEY);
+        await clearTokens();
         setUser(null);
       }
     })();
@@ -31,13 +36,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = useCallback(async (email: string, password: string) => {
     const { data } = await api.post("/auth/login", { email, password });
-    await AsyncStorage.setItem(TOKEN_KEY, data.token);
+    // Backend agora retorna access_token + refresh_token (e mantém legacy `token`)
+    const access: string = data.access_token || data.token;
+    const refresh: string | undefined = data.refresh_token;
+    await setTokens(access, refresh ?? null);
     setUser(data.user);
   }, []);
 
   const logout = useCallback(async () => {
     try { await api.post("/auth/logout"); } catch {}
-    await AsyncStorage.removeItem(TOKEN_KEY);
+    await clearTokens();
     setUser(null);
   }, []);
 

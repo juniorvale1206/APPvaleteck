@@ -1,0 +1,285 @@
+import re
+import uuid
+from datetime import datetime, timezone
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
+
+from constants import COMPANIES
+from core.database import db
+from core.security import get_current_user
+from core.config import CLOUDINARY_ENABLED, CLOUDINARY_FOLDER
+from core.storage import upload_base64_image
+from services.alerts import build_alerts
+from services.pdf import render_checklist_pdf
+from services.plates import normalize_plate, valid_plate
+from models.checklist import ChecklistInput, ChecklistOut, PhotoIn
+
+router = APIRouter(prefix="/checklists", tags=["checklists"])
+
+
+def _validate_send(c: dict) -> List[str]:
+    errors: List[str] = []
+    if not c.get("nome", "").strip():
+        errors.append("Nome obrigatório")
+    if not c.get("sobrenome", "").strip():
+        errors.append("Sobrenome obrigatório")
+    if not c.get("placa", "").strip():
+        errors.append("Placa obrigatória")
+    elif not valid_plate(c["placa"]):
+        errors.append("Placa inválida")
+    if not c.get("empresa", "").strip():
+        errors.append("Empresa obrigatória")
+    elif c["empresa"] not in COMPANIES:
+        errors.append("Empresa inválida")
+    if not c.get("equipamento", "").strip():
+        errors.append("Equipamento obrigatório")
+    photos = c.get("photos", [])
+    if len(photos) < 2:
+        errors.append("Mínimo de 2 fotos obrigatórias")
+    steps_present = {p.get("workflow_step") for p in photos if p.get("workflow_step")}
+    if steps_present and not {1, 2, 3, 4}.issubset(steps_present):
+        faltantes = sorted({1, 2, 3, 4} - steps_present)
+        errors.append(f"Fotos faltantes nos grupos: {', '.join(str(s) for s in faltantes)}")
+    if not c.get("signature_base64", "").strip() and not c.get("signature_url", ""):
+        errors.append("Assinatura obrigatória")
+    imei = (c.get("imei") or "").strip()
+    if imei and not (imei.isdigit() and len(imei) == 15):
+        errors.append("IMEI deve ter 15 dígitos")
+    return errors
+
+
+def _to_out(doc: dict) -> ChecklistOut:
+    return ChecklistOut(**{k: v for k, v in doc.items() if k != "_id" and k != "plate_norm"})
+
+
+def _process_photos_for_storage(photos: List[PhotoIn], cid: str, user_id: str) -> List[dict]:
+    """Para cada foto, se Cloudinary estiver ON e veio base64, faz upload e
+    substitui base64 por url. Mantém base64 caso o upload falhe."""
+    out: List[dict] = []
+    for idx, p in enumerate(photos):
+        d = p.dict() if isinstance(p, PhotoIn) else dict(p)
+        if CLOUDINARY_ENABLED and not d.get("url") and d.get("base64"):
+            url = upload_base64_image(
+                d["base64"],
+                folder=f"{CLOUDINARY_FOLDER}/checklists/{cid}",
+                public_id=f"photo-{idx:03d}-{(d.get('photo_id') or uuid.uuid4().hex[:6])}",
+            )
+            if url:
+                d["url"] = url
+                d["base64"] = ""  # libera espaço no Mongo
+        out.append(d)
+    return out
+
+
+def _process_signature_for_storage(b64: str, cid: str) -> tuple[str, Optional[str]]:
+    """Sobe a assinatura para Cloudinary se ativo. Retorna (base64_residual, url)."""
+    if not b64 or not CLOUDINARY_ENABLED:
+        return b64 or "", None
+    url = upload_base64_image(
+        b64,
+        folder=f"{CLOUDINARY_FOLDER}/checklists/{cid}",
+        public_id="signature",
+    )
+    if url:
+        return "", url
+    return b64, None
+
+
+@router.get("", response_model=List[ChecklistOut])
+async def list_checklists(q: Optional[str] = None, user=Depends(get_current_user)):
+    query: dict = {"user_id": user["id"]}
+    if q:
+        s = q.strip()
+        regex = {"$regex": re.escape(s), "$options": "i"}
+        query["$or"] = [
+            {"placa": regex},
+            {"nome": regex},
+            {"sobrenome": regex},
+            {"plate_norm": {"$regex": re.escape(normalize_plate(s)), "$options": "i"}},
+        ]
+    cursor = db.checklists.find(query, {"_id": 0}).sort("created_at", -1)
+    docs = await cursor.to_list(length=500)
+    return [_to_out(d) for d in docs]
+
+
+@router.post("", response_model=ChecklistOut)
+async def create_checklist(payload: ChecklistInput, user=Depends(get_current_user)):
+    status = payload.status if payload.status in ("rascunho", "enviado") else "rascunho"
+    if status == "enviado":
+        errors = _validate_send(payload.dict())
+        if errors:
+            raise HTTPException(status_code=400, detail="; ".join(errors))
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cid = str(uuid.uuid4())
+    numero = "VT-" + datetime.now(timezone.utc).strftime("%Y%m%d") + "-" + cid[:6].upper()
+
+    alerts: List[str] = []
+    if status == "enviado":
+        alerts = await build_alerts(payload, user["id"])
+
+    photos = _process_photos_for_storage(payload.photos, cid, user["id"])
+    sig_b64_residual, sig_url = _process_signature_for_storage(payload.signature_base64 or "", cid)
+
+    doc = {
+        "id": cid,
+        "numero": numero,
+        "user_id": user["id"],
+        "status": status,
+        "vehicle_type": payload.vehicle_type or "",
+        "vehicle_brand": payload.vehicle_brand or "",
+        "vehicle_model": payload.vehicle_model or "",
+        "vehicle_year": payload.vehicle_year or "",
+        "vehicle_color": payload.vehicle_color or "",
+        "vehicle_vin": payload.vehicle_vin or "",
+        "vehicle_odometer": payload.vehicle_odometer,
+        "problems_client": payload.problems_client or [],
+        "problems_client_other": payload.problems_client_other or "",
+        "problems_technician": payload.problems_technician or [],
+        "problems_technician_other": payload.problems_technician_other or "",
+        "battery_state": payload.battery_state or "",
+        "battery_voltage": payload.battery_voltage,
+        "imei": (payload.imei or "").strip(),
+        "iccid": (payload.iccid or "").strip(),
+        "device_online": payload.device_online,
+        "device_tested_at": payload.device_tested_at or "",
+        "device_test_message": payload.device_test_message or "",
+        "execution_started_at": payload.execution_started_at or "",
+        "execution_ended_at": payload.execution_ended_at or "",
+        "execution_elapsed_sec": payload.execution_elapsed_sec or 0,
+        "appointment_id": payload.appointment_id or "",
+        "nome": payload.nome.strip(),
+        "sobrenome": payload.sobrenome.strip(),
+        "placa": normalize_plate(payload.placa),
+        "plate_norm": normalize_plate(payload.placa),
+        "telefone": payload.telefone or "",
+        "obs_iniciais": payload.obs_iniciais or "",
+        "empresa": payload.empresa,
+        "equipamento": payload.equipamento,
+        "tipo_atendimento": payload.tipo_atendimento or "",
+        "acessorios": payload.acessorios or [],
+        "obs_tecnicas": payload.obs_tecnicas or "",
+        "photos": photos,
+        "location": payload.location,
+        "location_available": payload.location_available,
+        "signature_base64": sig_b64_residual,
+        "signature_url": sig_url,
+        "alerts": alerts,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "sent_at": now_iso if status == "enviado" else None,
+    }
+    await db.checklists.insert_one(doc)
+    doc.pop("_id", None)
+    if payload.appointment_id:
+        await db.appointments.update_one(
+            {"id": payload.appointment_id, "user_id": user["id"]},
+            {"$set": {"checklist_id": cid, "status": "concluido" if status == "enviado" else "em_andamento"}},
+        )
+    return _to_out(doc)
+
+
+@router.get("/{cid}", response_model=ChecklistOut)
+async def get_checklist(cid: str, user=Depends(get_current_user)):
+    doc = await db.checklists.find_one({"id": cid, "user_id": user["id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Checklist não encontrado")
+    return _to_out(doc)
+
+
+@router.put("/{cid}", response_model=ChecklistOut)
+async def update_checklist(cid: str, payload: ChecklistInput, user=Depends(get_current_user)):
+    existing = await db.checklists.find_one({"id": cid, "user_id": user["id"]}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Checklist não encontrado")
+    if existing["status"] not in ("rascunho",):
+        raise HTTPException(status_code=400, detail="Apenas rascunhos podem ser editados")
+
+    status = payload.status if payload.status in ("rascunho", "enviado") else "rascunho"
+    if status == "enviado":
+        errors = _validate_send(payload.dict())
+        if errors:
+            raise HTTPException(status_code=400, detail="; ".join(errors))
+
+    alerts: List[str] = existing.get("alerts", [])
+    if status == "enviado":
+        alerts = await build_alerts(payload, user["id"], exclude_id=cid)
+
+    photos = _process_photos_for_storage(payload.photos, cid, user["id"])
+    sig_b64_residual, sig_url = _process_signature_for_storage(payload.signature_base64 or "", cid)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    update = {
+        "status": status,
+        "vehicle_type": payload.vehicle_type or "",
+        "vehicle_brand": payload.vehicle_brand or "",
+        "vehicle_model": payload.vehicle_model or "",
+        "vehicle_year": payload.vehicle_year or "",
+        "vehicle_color": payload.vehicle_color or "",
+        "vehicle_vin": payload.vehicle_vin or "",
+        "vehicle_odometer": payload.vehicle_odometer,
+        "problems_client": payload.problems_client or [],
+        "problems_client_other": payload.problems_client_other or "",
+        "problems_technician": payload.problems_technician or [],
+        "problems_technician_other": payload.problems_technician_other or "",
+        "battery_state": payload.battery_state or "",
+        "battery_voltage": payload.battery_voltage,
+        "imei": (payload.imei or "").strip(),
+        "iccid": (payload.iccid or "").strip(),
+        "device_online": payload.device_online,
+        "device_tested_at": payload.device_tested_at or "",
+        "device_test_message": payload.device_test_message or "",
+        "execution_started_at": payload.execution_started_at or "",
+        "execution_ended_at": payload.execution_ended_at or "",
+        "execution_elapsed_sec": payload.execution_elapsed_sec or 0,
+        "nome": payload.nome.strip(),
+        "sobrenome": payload.sobrenome.strip(),
+        "placa": normalize_plate(payload.placa),
+        "plate_norm": normalize_plate(payload.placa),
+        "telefone": payload.telefone or "",
+        "obs_iniciais": payload.obs_iniciais or "",
+        "empresa": payload.empresa,
+        "equipamento": payload.equipamento,
+        "tipo_atendimento": payload.tipo_atendimento or "",
+        "acessorios": payload.acessorios or [],
+        "obs_tecnicas": payload.obs_tecnicas or "",
+        "photos": photos,
+        "location": payload.location,
+        "location_available": payload.location_available,
+        "signature_base64": sig_b64_residual if sig_b64_residual or sig_url else (existing.get("signature_base64", "")),
+        "signature_url": sig_url or existing.get("signature_url"),
+        "alerts": alerts,
+        "updated_at": now_iso,
+    }
+    if status == "enviado" and not existing.get("sent_at"):
+        update["sent_at"] = now_iso
+
+    await db.checklists.update_one({"id": cid}, {"$set": update})
+    doc = await db.checklists.find_one({"id": cid}, {"_id": 0})
+    return _to_out(doc)
+
+
+@router.delete("/{cid}")
+async def delete_checklist(cid: str, user=Depends(get_current_user)):
+    existing = await db.checklists.find_one({"id": cid, "user_id": user["id"]})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Checklist não encontrado")
+    if existing["status"] != "rascunho":
+        raise HTTPException(status_code=400, detail="Apenas rascunhos podem ser excluídos")
+    await db.checklists.delete_one({"id": cid})
+    return {"ok": True}
+
+
+@router.get("/{cid}/pdf")
+async def checklist_pdf(cid: str, user=Depends(get_current_user)):
+    doc = await db.checklists.find_one({"id": cid, "user_id": user["id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Checklist não encontrado")
+    pdf_bytes = render_checklist_pdf(doc)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=checklist-{doc['numero']}.pdf"},
+    )
