@@ -6,6 +6,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { AuthProvider } from "../src/auth";
 import { DraftProvider } from "../src/draft";
 import { NotificationsProvider } from "../src/notifications";
+import { SLATimerProvider } from "../src/slatimer";
 import { colors } from "../src/theme";
 
 export default function RootLayout() {
@@ -15,14 +16,16 @@ export default function RootLayout() {
         <AuthProvider>
           <NotificationsProvider>
             <DraftProvider>
-              <StatusBar style="light" />
-              <Stack
-                screenOptions={{
-                  headerShown: false,
-                  contentStyle: { backgroundColor: colors.bg },
-                  animation: "slide_from_right",
-                }}
-              />
+              <SLATimerProvider>
+                <StatusBar style="light" />
+                <Stack
+                  screenOptions={{
+                    headerShown: false,
+                    contentStyle: { backgroundColor: colors.bg },
+                    animation: "slide_from_right",
+                  }}
+                />
+              </SLATimerProvider>
             </DraftProvider>
           </NotificationsProvider>
         </AuthProvider>

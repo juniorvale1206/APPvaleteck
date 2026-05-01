@@ -25,13 +25,19 @@ export function apiErrorMessage(e: any): string {
   return e?.message || "Erro desconhecido";
 }
 
-export type Photo = { label?: string; base64: string };
+export type Photo = { label?: string; base64: string; workflow_step?: number; photo_id?: string };
 export type Checklist = {
   id: string;
   numero: string;
   user_id: string;
   status: "rascunho" | "enviado" | "em_auditoria" | "aprovado" | "reprovado";
   vehicle_type?: string;
+  vehicle_brand?: string;
+  vehicle_model?: string;
+  vehicle_year?: string;
+  vehicle_color?: string;
+  vehicle_vin?: string;
+  vehicle_odometer?: number | null;
   nome: string;
   sobrenome: string;
   placa: string;
@@ -48,6 +54,14 @@ export type Checklist = {
   problems_technician_other?: string;
   battery_state?: string;
   battery_voltage?: number | null;
+  imei?: string;
+  iccid?: string;
+  device_online?: boolean | null;
+  device_tested_at?: string;
+  device_test_message?: string;
+  execution_started_at?: string;
+  execution_ended_at?: string;
+  execution_elapsed_sec?: number;
   photos: Photo[];
   location?: { lat: number; lng: number } | null;
   location_available: boolean;

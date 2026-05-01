@@ -88,10 +88,15 @@ export default function ChecklistDetail() {
           <Row label="Empresa" value={item.empresa} />
           <Row label="Equipamento" value={item.equipamento} />
           <Row label="Tipo" value={item.tipo_atendimento || ""} />
+          <Row label="IMEI" value={item.imei || ""} />
+          <Row label="ICCID" value={item.iccid || ""} />
           <Row label="Acessórios" value={item.acessorios?.join(", ") || ""} />
           <Row label="Bateria" value={[item.battery_state || "", item.battery_voltage ? `${item.battery_voltage}V` : ""].filter(Boolean).join(" • ")} />
           <Row label="Problemas técnico" value={[...(item.problems_technician || []), item.problems_technician_other || ""].filter(Boolean).join(", ")} />
           <Row label="Obs. técnicas" value={item.obs_tecnicas || ""} />
+          <Row label="Dispositivo" value={item.device_online === true ? "✅ Online" : item.device_online === false ? "❌ Offline" : "Não testado"} />
+          {!!item.device_test_message && <Row label="Detalhe teste" value={item.device_test_message} />}
+          {!!item.execution_elapsed_sec && <Row label="Tempo execução" value={`${Math.floor(item.execution_elapsed_sec / 60)} min`} />}
         </View>
 
         <View style={styles.card}>

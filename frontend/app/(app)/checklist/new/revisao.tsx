@@ -6,6 +6,8 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { Btn, StepProgress } from "../../../../src/components";
 import { useDraft } from "../../../../src/draft";
 import { api, apiErrorMessage } from "../../../../src/api";
+import { SLABadge } from "../../../../src/SLABadge";
+import { formatSLA } from "../../../../src/slatimer";
 import { colors, fonts, radii, space } from "../../../../src/theme";
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -28,6 +30,7 @@ export default function Revisao() {
       const payload: any = {
         ...draft,
         battery_voltage: draft.battery_voltage ? parseFloat(draft.battery_voltage.replace(",", ".")) : null,
+        vehicle_odometer: draft.vehicle_odometer ? parseInt(draft.vehicle_odometer.replace(/\D/g, "") || "0", 10) : null,
         status,
       };
       const { data } = await api.post("/checklists", payload);
@@ -59,7 +62,7 @@ export default function Revisao() {
       <View style={styles.header}>
         <TouchableOpacity testID="back-btn" onPress={() => router.back()}><Ionicons name="arrow-back" size={26} color={colors.text} /></TouchableOpacity>
         <Text style={styles.title}>Revisão</Text>
-        <View style={{ width: 26 }} />
+        <SLABadge compact />
       </View>
       <StepProgress step={6} total={6} />
       <ScrollView contentContainerStyle={styles.content}>
@@ -100,10 +103,22 @@ export default function Revisao() {
           <Row label="Empresa" value={draft.empresa} />
           <Row label="Equipamento" value={draft.equipamento} />
           <Row label="Tipo" value={draft.tipo_atendimento} />
+          <Row label="IMEI" value={draft.imei} />
+          <Row label="ICCID" value={draft.iccid} />
           <Row label="Acessórios" value={draft.acessorios.join(", ") || "Nenhum"} />
           <Row label="Bateria" value={[draft.battery_state, voltage].filter(Boolean).join(" • ")} />
           <Row label="Problemas técnico" value={problemsTech} />
           <Row label="Obs. técnicas" value={draft.obs_tecnicas} />
+        </View>
+
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>Teste de comunicação</Text>
+            <TouchableOpacity onPress={() => editStep("/(app)/checklist/new/assinatura")}><Text style={styles.editLink}>Editar</Text></TouchableOpacity>
+          </View>
+          <Row label="Status" value={draft.device_online === true ? "✅ Online" : draft.device_online === false ? "❌ Offline" : "Não testado"} />
+          {!!draft.device_test_message && <Row label="Mensagem" value={draft.device_test_message} />}
+          {!!draft.execution_elapsed_sec && <Row label="Tempo execução" value={formatSLA(draft.execution_elapsed_sec)} />}
         </View>
 
         <View style={styles.card}>

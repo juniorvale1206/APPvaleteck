@@ -3,6 +3,12 @@ import type { Photo } from "./api";
 
 export type Draft = {
   vehicle_type: "" | "carro" | "moto";
+  vehicle_brand: string;
+  vehicle_model: string;
+  vehicle_year: string;
+  vehicle_color: string;
+  vehicle_vin: string;
+  vehicle_odometer: string;
   nome: string;
   sobrenome: string;
   placa: string;
@@ -18,7 +24,15 @@ export type Draft = {
   problems_technician: string[];
   problems_technician_other: string;
   battery_state: string;
-  battery_voltage: string; // keep as string for input, parse on submit
+  battery_voltage: string;
+  imei: string;
+  iccid: string;
+  device_online: boolean | null;
+  device_tested_at: string;
+  device_test_message: string;
+  execution_started_at: string;
+  execution_ended_at: string;
+  execution_elapsed_sec: number;
   photos: Photo[];
   location: { lat: number; lng: number } | null;
   location_available: boolean;
@@ -28,6 +42,12 @@ export type Draft = {
 
 const empty: Draft = {
   vehicle_type: "",
+  vehicle_brand: "",
+  vehicle_model: "",
+  vehicle_year: "",
+  vehicle_color: "",
+  vehicle_vin: "",
+  vehicle_odometer: "",
   nome: "",
   sobrenome: "",
   placa: "",
@@ -44,6 +64,14 @@ const empty: Draft = {
   problems_technician_other: "",
   battery_state: "",
   battery_voltage: "",
+  imei: "",
+  iccid: "",
+  device_online: null,
+  device_tested_at: "",
+  device_test_message: "",
+  execution_started_at: "",
+  execution_ended_at: "",
+  execution_elapsed_sec: 0,
   photos: [],
   location: null,
   location_available: false,

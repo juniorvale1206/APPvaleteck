@@ -159,11 +159,19 @@ class TokenOut(BaseModel):
 class PhotoIn(BaseModel):
     label: Optional[str] = None
     base64: str  # data uri or raw base64 (PNG/JPEG)
+    workflow_step: Optional[int] = None  # 1=pré-instalação, 2=equipamento, 3=camuflagem, 4=finalização
+    photo_id: Optional[str] = ""
 
 
 class ChecklistInput(BaseModel):
     # Veículo
     vehicle_type: Optional[str] = ""  # carro | moto
+    vehicle_brand: Optional[str] = ""
+    vehicle_model: Optional[str] = ""
+    vehicle_year: Optional[str] = ""
+    vehicle_color: Optional[str] = ""
+    vehicle_vin: Optional[str] = ""
+    vehicle_odometer: Optional[int] = None
     # Cliente
     nome: str
     sobrenome: str
@@ -180,8 +188,18 @@ class ChecklistInput(BaseModel):
     obs_tecnicas: Optional[str] = ""
     problems_technician: List[str] = []
     problems_technician_other: Optional[str] = ""
-    battery_state: Optional[str] = ""  # Nova | Em bom estado | Usada | Apresentando falhas
-    battery_voltage: Optional[float] = None  # in Volts
+    battery_state: Optional[str] = ""
+    battery_voltage: Optional[float] = None
+    # Identificação do dispositivo
+    imei: Optional[str] = ""
+    iccid: Optional[str] = ""
+    device_online: Optional[bool] = None
+    device_tested_at: Optional[str] = ""
+    device_test_message: Optional[str] = ""
+    # SLA Timer
+    execution_started_at: Optional[str] = ""
+    execution_ended_at: Optional[str] = ""
+    execution_elapsed_sec: Optional[int] = 0
     # Evidências
     photos: List[PhotoIn] = []
     location: Optional[dict] = None
@@ -191,7 +209,7 @@ class ChecklistInput(BaseModel):
     # Vínculo agenda
     appointment_id: Optional[str] = ""
     # Estado
-    status: str = "rascunho"  # rascunho | enviado
+    status: str = "rascunho"
 
 
 class ChecklistOut(BaseModel):
@@ -200,6 +218,12 @@ class ChecklistOut(BaseModel):
     user_id: str
     status: str
     vehicle_type: Optional[str] = ""
+    vehicle_brand: Optional[str] = ""
+    vehicle_model: Optional[str] = ""
+    vehicle_year: Optional[str] = ""
+    vehicle_color: Optional[str] = ""
+    vehicle_vin: Optional[str] = ""
+    vehicle_odometer: Optional[int] = None
     nome: str
     sobrenome: str
     placa: str
@@ -216,6 +240,14 @@ class ChecklistOut(BaseModel):
     problems_technician_other: Optional[str] = ""
     battery_state: Optional[str] = ""
     battery_voltage: Optional[float] = None
+    imei: Optional[str] = ""
+    iccid: Optional[str] = ""
+    device_online: Optional[bool] = None
+    device_tested_at: Optional[str] = ""
+    device_test_message: Optional[str] = ""
+    execution_started_at: Optional[str] = ""
+    execution_ended_at: Optional[str] = ""
+    execution_elapsed_sec: Optional[int] = 0
     photos: List[PhotoIn] = []
     location: Optional[dict] = None
     location_available: bool = False
@@ -379,6 +411,40 @@ async def seed_new_appointment(user=Depends(get_current_user)):
     return doc
 
 
+# ----------------- Device Test (mock) -----------------
+class DeviceTestIn(BaseModel):
+    imei: str
+
+
+class DeviceTestOut(BaseModel):
+    online: bool
+    latency_ms: int
+    message: str
+    tested_at: str
+
+
+@api.post("/device/test", response_model=DeviceTestOut)
+async def test_device(payload: DeviceTestIn, user=Depends(get_current_user)):
+    """Mock de verificação de comunicação do rastreador pelo IMEI.
+    Retorna online/offline determinístico baseado no IMEI (~90% online) — placeholder
+    para integração futura com API do parceiro (Rastremix/GPS/etc)."""
+    import random, hashlib
+    imei = (payload.imei or "").strip()
+    if not imei or not imei.isdigit() or len(imei) != 15:
+        raise HTTPException(status_code=400, detail="IMEI inválido (15 dígitos)")
+    # Determinístico: hash do IMEI → 90% online
+    seed = int(hashlib.md5(imei.encode()).hexdigest(), 16)
+    random.seed(seed)
+    online = random.random() < 0.9
+    latency = random.randint(80, 380) if online else 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if online:
+        msg = f"Dispositivo respondendo — último sinal agora, latência {latency}ms"
+    else:
+        msg = "Dispositivo offline — verifique alimentação, antena e conexão GSM"
+    return DeviceTestOut(online=online, latency_ms=latency, message=msg, tested_at=now_iso)
+
+
 # ----------------- Checklists -----------------
 def _validate_send(c: dict) -> List[str]:
     errors: List[str] = []
@@ -396,10 +462,20 @@ def _validate_send(c: dict) -> List[str]:
         errors.append("Empresa inválida")
     if not c.get("equipamento", "").strip():
         errors.append("Equipamento obrigatório")
-    if len(c.get("photos", [])) < 2:
+    photos = c.get("photos", [])
+    if len(photos) < 2:
         errors.append("Mínimo de 2 fotos obrigatórias")
+    # Validação por grupo de fotos (se algum grupo foi iniciado, deve ter cobertura mínima)
+    steps_present = {p.get("workflow_step") for p in photos if p.get("workflow_step")}
+    if steps_present and not {1, 2, 3, 4}.issubset(steps_present):
+        faltantes = sorted({1, 2, 3, 4} - steps_present)
+        errors.append(f"Fotos faltantes nos grupos: {', '.join(str(s) for s in faltantes)}")
     if not c.get("signature_base64", "").strip():
         errors.append("Assinatura obrigatória")
+    # Validação de IMEI (15 dígitos) se preenchido
+    imei = (c.get("imei") or "").strip()
+    if imei and not (imei.isdigit() and len(imei) == 15):
+        errors.append("IMEI deve ter 15 dígitos")
     return errors
 
 
@@ -546,12 +622,26 @@ async def update_checklist(cid: str, payload: ChecklistInput, user=Depends(get_c
     update = {
         "status": status,
         "vehicle_type": payload.vehicle_type or "",
+        "vehicle_brand": payload.vehicle_brand or "",
+        "vehicle_model": payload.vehicle_model or "",
+        "vehicle_year": payload.vehicle_year or "",
+        "vehicle_color": payload.vehicle_color or "",
+        "vehicle_vin": payload.vehicle_vin or "",
+        "vehicle_odometer": payload.vehicle_odometer,
         "problems_client": payload.problems_client or [],
         "problems_client_other": payload.problems_client_other or "",
         "problems_technician": payload.problems_technician or [],
         "problems_technician_other": payload.problems_technician_other or "",
         "battery_state": payload.battery_state or "",
         "battery_voltage": payload.battery_voltage,
+        "imei": (payload.imei or "").strip(),
+        "iccid": (payload.iccid or "").strip(),
+        "device_online": payload.device_online,
+        "device_tested_at": payload.device_tested_at or "",
+        "device_test_message": payload.device_test_message or "",
+        "execution_started_at": payload.execution_started_at or "",
+        "execution_ended_at": payload.execution_ended_at or "",
+        "execution_elapsed_sec": payload.execution_elapsed_sec or 0,
         "nome": payload.nome.strip(),
         "sobrenome": payload.sobrenome.strip(),
         "placa": normalize_plate(payload.placa),

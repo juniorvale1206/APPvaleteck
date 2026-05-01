@@ -1,0 +1,52 @@
+{
+  "summary": "Valeteck v4 testing — Backend 10/11 PASS in pytest. Critical bug found: POST /api/checklists does NOT persist v4 fields (imei, iccid, device_online, device_tested_at, device_test_message, execution_started_at, execution_ended_at, execution_elapsed_sec, vehicle_brand/model/year/color/vin/odometer). The PUT update endpoint persists them correctly, but the create_checklist function (server.py lines 552-584) omits these keys from the inserted Mongo document. Device test mock works perfectly: deterministic by IMEI hash, returns {online, latency_ms, message, tested_at}, validates 15-digit numeric IMEI (rejects short/non-digit/empty with 400), requires auth (401). Workflow_step photo persistence works (groups 1–4 + photo_id round-trip). Submit-time validation correctly rejects when not all 4 workflow groups are present (when any are present). Frontend (mobile 390x844): Step 3 Instalação shows SLA badge '00:02' (testID sla-badge) auto-started, IMEI/ICCID inputs with yellow scan buttons (scan-imei, scan-iccid). Step 4 Evidências shows 4 numbered groups with correct titles (Pré-instalação, Equipamento, Camuflagem, Finalização) each with 2 mandatory photo slots, '0 / 8 fotos obrigatórias capturadas' counter, 'Falta 8 foto(s)' button disabled. Step 5 Assinatura shows 'Teste de comunicação' card with 'Testar' button (testID test-device-btn). Step 6 Revisão shows IMEI / ICCID rows; tempo execução row only renders when execution_elapsed_sec > 0 (conditional). Signature pad shows 'React Native WebView does not support this platform' on web — expected on web preview, not a bug.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/checklists",
+        "issue": "Missing keys in inserted document: imei, iccid, device_online, device_tested_at, device_test_message, execution_started_at, execution_ended_at, execution_elapsed_sec, vehicle_brand, vehicle_model, vehicle_year, vehicle_color, vehicle_vin, vehicle_odometer. Returned ChecklistOut therefore has '' / None for these fields even though payload sent them. Reproduced: POST a checklist with imei='123456789012345' & vehicle_brand='Honda' etc → GET returns imei='' and vehicle_brand=''. PUT works correctly (lines 622–662 include all fields). FIX: add those keys to the doc dict in create_checklist (server.py around line 552–584) mirroring update_checklist; status=enviado must also be allowed to create with v4 fields persisted in one shot.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {
+        "component": "react-native-signature-canvas (assinatura.tsx)",
+        "issue": "WebView shows 'React Native WebView does not support this platform.' on Expo web preview. Expected limitation on web; works on native. No action needed unless web parity is desired (would need a canvas-based fallback)."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_valeteck_v4.py",
+    "/app/test_reports/pytest/v4_results.xml"
+  ],
+  "action_items": [
+    "FIX (CRITICAL): server.py create_checklist — extend the inserted doc to include all v4 fields (imei, iccid, device_online, device_tested_at, device_test_message, execution_started_at, execution_ended_at, execution_elapsed_sec, vehicle_brand/model/year/color/vin/odometer). Without this, frontend submitting the final checklist via POST loses every v4 datum.",
+    "Optional: extract checklist doc-building into a shared helper to avoid drift between POST and PUT (already happened once)."
+  ],
+  "critical_code_review_comments": [
+    "server.py POST /api/device/test mock is deterministic per IMEI via md5(imei) seed — implementation correct, ~90% online distribution.",
+    "_validate_send: photo workflow_step gate — only triggers when at least one photo carries workflow_step (i.e. any of 1–4 set). If user uploads only photos without workflow_step, only the >=2 photo count rule applies. Acceptable for now (frontend always sets workflow_step), but consider requiring 8 (2/group) explicitly.",
+    "server.py create_checklist (lines 552–584) is the source of the v4-fields-not-persisted bug; PUT update_checklist (lines 622–662) correctly includes them.",
+    "SLABadge.tsx returns null when elapsedSec <= 0 — this is why on web Expo Router full page reloads (which reset DraftProvider state) hide the badge after navigating away from Instalação. On native, DraftProvider persists across screen navigations so badge shows on etapas 3–6 as specified.",
+    "ChecklistInput model accepts vehicle_odometer as int (no range limits). Consider Field(ge=0).",
+    "server.py is now ~790 lines — past the 700-line guideline; recommend splitting into routers (auth, reference, appointments, checklists, device)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_valeteck_v4.py (created)"
+  ],
+  "success_rate": {
+    "backend": "91% (10/11 — 1 critical create-persistence failure)",
+    "frontend": "100% on the smoke flows exercised (Instalação SLA + IMEI/ICCID + scan buttons; Evidências 4 grupos + 8 slots; Assinatura device test card + Testar; Revisão IMEI/ICCID rows present)"
+  },
+  "seed_data_creation": "5 test checklists were created during pytest with TEST_ prefix in nome/sobrenome (some sent, some draft). Best-effort cleanup deletes only drafts; sent ones persist (cannot be deleted by API design). Look for nome='TEST_Joao'/sobrenome='TEST_Silva' & sobrenome='TEST_Tester' to clean manually if desired.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "v4 testIDs verified: sla-badge, scan-imei, scan-iccid, imei-input, iccid-input, group-1..group-4, photo-1-avaria-frontal, add-1-avaria-frontal, photo-1-avaria-traseira, photo-2-equip-placa, photo-2-imei-placa, photo-3-fiacao, photo-3-painel, photo-4-panoramica, photo-4-odometro, capture-location, step-next, device-test-card, test-device-btn, sig-clear, sig-confirm. Login tecnico@valeteck.com/tecnico123. BASE: https://installer-track-1.preview.emergentagent.com. After main-agent fix, rerun pytest /app/backend/tests/test_valeteck_v4.py — only test_send_with_all_4_groups_succeeds is currently red. Frontend ‘Testar’ button click was not exercised end-to-end (requires manual IMEI fill); device/test endpoint already validated via direct API tests.",
+  "rca_of_issue": "create_checklist (server.py) was authored before v4 fields were added to ChecklistInput/Out models. When v4 added imei/iccid/device_*/execution_*/vehicle_* fields to models and to update_checklist, the create handler was not updated. The doc dict explicitly listed only the legacy fields; Pydantic v1 does not auto-include unknown attrs in the dict. Reproduction: 1) POST /api/checklists with status='rascunho' or 'enviado' and full v4 payload, 2) GET /api/checklists/{id} → imei/iccid/device_*/execution_*/vehicle_brand/model/year/color/vin/odometer all return empty/None. Mitigation: replicate the fields list from update_checklist (line 622+) into the create_checklist doc dict, or refactor both into a shared _doc_from_payload helper."
+}
