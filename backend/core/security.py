@@ -4,6 +4,7 @@ Implementa access + refresh tokens conforme padrão OAuth2.
 """
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple
+from uuid import uuid4
 
 import bcrypt
 import jwt
@@ -37,6 +38,7 @@ def create_access_token(user_id: str, email: str) -> str:
         "email": email,
         "exp": datetime.now(timezone.utc) + timedelta(minutes=JWT_ACCESS_MINUTES),
         "iat": datetime.now(timezone.utc),
+        "jti": uuid4().hex,
         "type": "access",
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
@@ -48,6 +50,7 @@ def create_refresh_token(user_id: str, email: str) -> str:
         "email": email,
         "exp": datetime.now(timezone.utc) + timedelta(days=JWT_REFRESH_DAYS),
         "iat": datetime.now(timezone.utc),
+        "jti": uuid4().hex,
         "type": "refresh",
     }
     return jwt.encode(payload, JWT_REFRESH_SECRET, algorithm=JWT_ALGORITHM)
