@@ -1,0 +1,45 @@
+{
+  "summary": "Valeteck v8 — Offline-first checklist queue + draft auto-save tested. Found and FIXED 2 critical bugs: (1) missing import of useSync in agenda.tsx (would crash app on load), (2) race condition in SyncProvider that wiped the persisted queue from localStorage on every app reload (defeated entire offline feature). After fixes: draft-banner appears on Agenda when stored draft exists, Continue navigates to /checklist/new with data; sync-banner appears when queue.length>0; /sync screen renders 'Tudo sincronizado' when empty, queue items with status pills + Descartar; sync-now button correctly disabled when offline OR queue empty; Profile→menu-sync route exists. Backend POST /api/checklists regression PASS.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/health", "issue": "Returns 404 (endpoint not implemented). Not blocking — auth/me works as health proxy."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_valeteck_v8.py",
+    "/app/test_reports/pytest/v8_results.xml"
+  ],
+  "action_items": [
+    "Verify the two fixes I applied (see updated_files). Both are minimal and correct, but please review draft.tsx for the same race-condition pattern: on mount, the 400ms debounce can trigger writeJson/removeKey with the still-empty initial state and wipe the persisted draft from a previous session. Suggest adding a `loaded` flag in DraftProvider: skip the persist effect until the initial readJson on mount completes (mirror of the fix I applied to SyncProvider).",
+    "Profile screen footer still says 'v7 — Instalação veicular' (versionInfo). Update to v8 if desired."
+  ],
+  "critical_code_review_comments": [
+    "BUG #1 FIXED — agenda.tsx used `useSync()` without importing it. Would throw ReferenceError on Agenda mount. Added `import { useSync } from '../../../src/sync';`.",
+    "BUG #2 FIXED — sync.tsx had a classic 'persist-on-mount-wipes-storage' race. Two useEffects on mount: (a) read localStorage → setQueue async; (b) writeJson(queue) on every queue change. AsyncStorage web wraps localStorage.setItem synchronously inside a Promise; on the first render, effect (b) fires with initial `[]` and overwrites whatever was persisted before effect (a)'s readJson resolves. Result: any queued offline checklist is permanently lost on next app reload — defeats the entire v8 feature. Fix: added `loaded` flag, persist effect now `if (loaded) writeJson(...)` and only flips `loaded=true` after the initial read completes.",
+    "POTENTIAL BUG — draft.tsx has the same shape: 400ms debounce persist effect runs with initial empty draft on mount, calls `removeKey(KEYS.draftCurrent)` (since `isMeaningful(empty)===false`). This wipes the user's stored draft after just 400ms even if they never opened the checklist. The 'Continuar rascunho?' banner still works in single-session because `hasStored` is set to true synchronously by the mount-check, but on the SECOND reload the localStorage will be empty and the banner won't show. Apply the same `loaded` guard.",
+    "sync.tsx syncNow() iterates a snapshot read from storage (`current = await readJson`). After a fresh reconnect, this can race with in-memory state from the read effect — minor, but consider iterating over the in-memory `queue` instead.",
+    "agenda.tsx imports `useSync` from src/sync but the file already imports many providers. Provider tree in _layout.tsx wraps SyncProvider OUTSIDE NotificationsProvider/DraftProvider — fine for current use, but if SyncProvider ever needs auth headers it will need to be inside AuthProvider (it is, OK).",
+    "@react-native-community/netinfo on web only fires offline/online via navigator.onLine — be aware tests must dispatch window.dispatchEvent(new Event('offline')) to simulate; pure context.setOffline doesn't trigger NetInfo's listener."
+  ],
+  "updated_files": [
+    "/app/frontend/app/(app)/(tabs)/agenda.tsx — added missing `import { useSync } from '../../../src/sync';`",
+    "/app/frontend/src/sync.tsx — added `loaded` state flag to prevent persist-on-mount from wiping the stored queue",
+    "/app/backend/tests/test_valeteck_v8.py — created"
+  ],
+  "success_rate": {
+    "backend": "POST /api/checklists works (rascunho path verified end-to-end with create+GET). 'Enviado' path requires valid empresa+2 photos+signature, returns 400 as expected business rule. /api/health does not exist (minor).",
+    "frontend": "After fixes: 7/7 verified — login, agenda renders, sync-banner hidden when online+empty queue, draft-banner appears with stored draft, Continuar navigates correctly, /sync screen shows 'Tudo sincronizado'+disabled sync button, queue item renders with testID `queue-LCL-...`, sync-banner appears when queue.length>0 and persists across reload, Profile→menu-sync exists."
+  },
+  "seed_data_creation": "None persistent. test_create_and_get creates 1 rascunho prefixed TEST_Sync and DELETEs it in same test.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "v8 testIDs (mobile 390x844): Agenda banners — sync-banner (visible when !online OR queue.length>0), draft-banner with continue-draft + discard-draft buttons. /sync screen — sync-back, sync-now, queue-{numero_local}, remove-{numero_local}. Profile — menu-sync linking to /sync. Web testing notes: (1) AsyncStorage maps to window.localStorage with no prefix (use raw key 'valeteck_sync_queue' / 'valeteck_draft_current'); (2) NetInfo on web listens to navigator.onLine — to simulate offline use `await page.context.set_offline(True)` AND dispatch `window.dispatchEvent(new Event('offline'))`; (3) auto-sync fires 500ms after coming back online so failed-payload items will be retried — use status='failed' in test fixtures to suppress retry, or invalid payloads. Login: tecnico@valeteck.com / tecnico123. Routes after login resolve to /agenda not /(app)/(tabs)/agenda — Expo Router strips group segments.",
+  "rca_of_issue": "RCA Bug #1 (useSync not imported in agenda.tsx): Developer added `const { online, queue, syncing } = useSync()` but forgot the import. Reproduction: any user reaching Agenda would see RN red screen 'useSync is not defined'. Fix: added `import { useSync } from '../../../src/sync';` after the useNotifications import. RCA Bug #2 (queue wipe): On SyncProvider mount, two useEffects schedule. The persist effect `useEffect(() => writeJson(KEYS.syncQueue, queue), [queue])` fires with initial state `[]`. AsyncStorage's web shim performs `window.localStorage.setItem(...)` SYNCHRONOUSLY inside a Promise wrapper, so the storage is overwritten with `[]` immediately. The read effect's `await readJson` then returns `[]` because storage was already overwritten. Net effect: every fresh app load wipes the queue. Reproduction: inject a queue item to localStorage, reload, observe localStorage value goes from [item] → [] within 1-2 seconds. Mitigation: gate the persist useEffect on a `loaded` flag that flips true only after the initial readJson resolves. Same pattern likely affects DraftProvider — flagged for main agent."
+}

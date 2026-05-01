@@ -53,6 +53,7 @@ export default function Profile() {
           <Text style={styles.sectionTitle}>Operações</Text>
           <MenuRow testID="menu-ranking" icon="trophy-outline" label="Ranking semanal" color="#F59E0B" onPress={() => router.push("/(app)/ranking")} />
           <MenuRow testID="menu-estoque" icon="cube-outline" label="Meu estoque" color="#3B82F6" onPress={() => router.push("/(app)/estoque")} />
+          <MenuRow testID="menu-sync" icon="sync-outline" label="Fila de sincronização" color="#10B981" onPress={() => router.push("/(app)/sync")} />
         </View>
 
         <View style={{ marginTop: space.lg }}>

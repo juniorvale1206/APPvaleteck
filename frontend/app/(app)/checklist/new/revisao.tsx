@@ -8,6 +8,7 @@ import { useDraft } from "../../../../src/draft";
 import { api, apiErrorMessage } from "../../../../src/api";
 import { SLABadge } from "../../../../src/SLABadge";
 import { formatSLA } from "../../../../src/slatimer";
+import { useSync } from "../../../../src/sync";
 import { colors, fonts, radii, space } from "../../../../src/theme";
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -22,6 +23,7 @@ function Row({ label, value }: { label: string; value: string }) {
 export default function Revisao() {
   const router = useRouter();
   const { draft, reset } = useDraft();
+  const { online, enqueue, syncNow } = useSync();
   const [loading, setLoading] = useState(false);
 
   const submit = async (status: "rascunho" | "enviado") => {
@@ -33,13 +35,39 @@ export default function Revisao() {
         vehicle_odometer: draft.vehicle_odometer ? parseInt(draft.vehicle_odometer.replace(/\D/g, "") || "0", 10) : null,
         status,
       };
-      const { data } = await api.post("/checklists", payload);
-      reset();
-      Alert.alert(
-        status === "enviado" ? "Checklist enviado!" : "Rascunho salvo",
-        status === "enviado" ? `Número: ${data.numero}` : "Você pode continuar depois.",
-        [{ text: "OK", onPress: () => router.replace({ pathname: "/(app)/checklist/[id]", params: { id: data.id } }) }]
-      );
+      if (!online && status === "enviado") {
+        // offline: enqueue for later sync
+        const item = await enqueue(payload);
+        reset();
+        Alert.alert(
+          "📡 Salvo offline",
+          `Sem internet no momento.\n\nChecklist ${item.numero_local} foi salvo no dispositivo e será enviado automaticamente quando a conexão voltar.`,
+          [{ text: "OK", onPress: () => router.replace("/(app)/(tabs)/agenda") }]
+        );
+        return;
+      }
+      try {
+        const { data } = await api.post("/checklists", payload);
+        reset();
+        Alert.alert(
+          status === "enviado" ? "Checklist enviado!" : "Rascunho salvo",
+          status === "enviado" ? `Número: ${data.numero}` : "Você pode continuar depois.",
+          [{ text: "OK", onPress: () => router.replace({ pathname: "/(app)/checklist/[id]", params: { id: data.id } }) }]
+        );
+      } catch (e: any) {
+        // Network/server error during online submit → queue as fallback if it was send
+        if (status === "enviado") {
+          const item = await enqueue(payload);
+          reset();
+          Alert.alert(
+            "📡 Salvo na fila",
+            `Servidor indisponível. Checklist ${item.numero_local} ficará em fila e será reenviado automaticamente.`,
+            [{ text: "OK", onPress: () => router.replace("/(app)/(tabs)/agenda") }]
+          );
+        } else {
+          throw e;
+        }
+      }
     } catch (e: any) {
       Alert.alert("Erro", apiErrorMessage(e));
     } finally { setLoading(false); }

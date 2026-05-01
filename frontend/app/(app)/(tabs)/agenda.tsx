@@ -7,6 +7,7 @@ import { api, apiErrorMessage } from "../../../src/api";
 import { useAuth } from "../../../src/auth";
 import { useDraft, formatPlate } from "../../../src/draft";
 import { useNotifications } from "../../../src/notifications";
+import { useSync } from "../../../src/sync";
 import { colors, fonts, radii, shadow, space } from "../../../src/theme";
 
 type Appt = {
@@ -44,8 +45,9 @@ const dataPtBr = () => {
 export default function Agenda() {
   const router = useRouter();
   const { user } = useAuth();
-  const { reset, set } = useDraft();
-  const { newCount, markAllSeen } = useNotifications();
+  const { reset, set, hasStored, loadStored, discardStored } = useDraft();
+  const { newCount, markAllSeen, showToast } = useNotifications();
+  const { online, queue, syncing } = useSync();
   const [items, setItems] = useState<Appt[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -171,6 +173,54 @@ export default function Agenda() {
           </View>
         </View>
       </View>
+
+      {/* Offline / Sync banner */}
+      {(!online || queue.length > 0) && (
+        <TouchableOpacity
+          testID="sync-banner"
+          onPress={() => router.push("/(app)/sync")}
+          style={[styles.syncBanner, { backgroundColor: online ? colors.warningBg : colors.dangerBg, borderColor: online ? colors.warning : colors.danger }]}
+          activeOpacity={0.85}
+        >
+          <Ionicons name={online ? "cloud-upload-outline" : "cloud-offline"} size={18} color={online ? colors.warning : colors.danger} />
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.syncBannerTxt, { color: online ? "#92400E" : colors.danger }]}>
+              {!online ? "Modo offline — dados seguros no dispositivo" : `${queue.length} checklist(s) na fila`}
+            </Text>
+            {online && <Text style={styles.syncBannerSub}>Tocar para ver / sincronizar agora</Text>}
+          </View>
+          {syncing && <ActivityIndicator color={colors.warning} />}
+          <Ionicons name="chevron-forward" size={18} color={online ? colors.warning : colors.danger} />
+        </TouchableOpacity>
+      )}
+
+      {/* Rascunho em andamento */}
+      {hasStored && (
+        <View style={styles.draftBanner} testID="draft-banner">
+          <Ionicons name="document-text" size={20} color={colors.primary} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.draftTxt}>Rascunho em andamento</Text>
+            <Text style={styles.draftSub}>Continue onde parou</Text>
+          </View>
+          <TouchableOpacity
+            testID="discard-draft"
+            onPress={() => Alert.alert("Descartar rascunho?", "Os dados não salvos serão perdidos.", [
+              { text: "Cancelar", style: "cancel" },
+              { text: "Descartar", style: "destructive", onPress: () => discardStored() },
+            ])}
+            style={styles.draftBtnSec}
+          >
+            <Text style={styles.draftBtnSecTxt}>Descartar</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            testID="continue-draft"
+            onPress={async () => { await loadStored(); router.push("/(app)/checklist/new"); }}
+            style={styles.draftBtn}
+          >
+            <Text style={styles.draftBtnTxt}>Continuar</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Light content */}
       <ScrollView
@@ -483,6 +533,16 @@ const styles = StyleSheet.create({
   credPill: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "rgba(255,212,0,0.15)", borderWidth: 1, borderColor: colors.primary, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 },
   credTxt: { color: colors.primary, fontSize: 11, fontWeight: "800" },
   content: { padding: space.lg, paddingBottom: 40 },
+  syncBanner: { flexDirection: "row", alignItems: "center", gap: 10, marginHorizontal: space.lg, marginTop: space.sm, padding: 12, borderRadius: radii.md, borderWidth: 1 },
+  syncBannerTxt: { fontWeight: "800", fontSize: fonts.size.sm },
+  syncBannerSub: { color: colors.textMuted, fontSize: fonts.size.xs, marginTop: 2 },
+  draftBanner: { flexDirection: "row", alignItems: "center", gap: 10, marginHorizontal: space.lg, marginTop: space.sm, padding: 12, borderRadius: radii.md, backgroundColor: "#FEF9C3", borderWidth: 1, borderColor: colors.primary },
+  draftTxt: { color: colors.text, fontWeight: "800", fontSize: fonts.size.sm },
+  draftSub: { color: colors.textMuted, fontSize: fonts.size.xs, marginTop: 2 },
+  draftBtn: { backgroundColor: colors.brandBlack, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radii.sm },
+  draftBtnTxt: { color: colors.primary, fontWeight: "900", fontSize: fonts.size.xs },
+  draftBtnSec: { paddingHorizontal: 10, paddingVertical: 8 },
+  draftBtnSecTxt: { color: colors.textMuted, fontWeight: "700", fontSize: fonts.size.xs },
   sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: space.md },
   iconSq: { width: 36, height: 36, borderRadius: 8, backgroundColor: colors.primary + "22", alignItems: "center", justifyContent: "center" },
   sectionTitle: { color: colors.text, fontSize: fonts.size.xl, fontWeight: "900" },

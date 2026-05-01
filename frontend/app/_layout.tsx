@@ -7,6 +7,7 @@ import { AuthProvider } from "../src/auth";
 import { DraftProvider } from "../src/draft";
 import { NotificationsProvider } from "../src/notifications";
 import { SLATimerProvider } from "../src/slatimer";
+import { SyncProvider } from "../src/sync";
 import { colors } from "../src/theme";
 
 export default function RootLayout() {
@@ -14,20 +15,22 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bg }}>
       <SafeAreaProvider>
         <AuthProvider>
-          <NotificationsProvider>
-            <DraftProvider>
-              <SLATimerProvider>
-                <StatusBar style="light" />
-                <Stack
-                  screenOptions={{
-                    headerShown: false,
-                    contentStyle: { backgroundColor: colors.bg },
-                    animation: "slide_from_right",
-                  }}
-                />
-              </SLATimerProvider>
-            </DraftProvider>
-          </NotificationsProvider>
+          <SyncProvider>
+            <NotificationsProvider>
+              <DraftProvider>
+                <SLATimerProvider>
+                  <StatusBar style="dark" />
+                  <Stack
+                    screenOptions={{
+                      headerShown: false,
+                      contentStyle: { backgroundColor: colors.bg },
+                      animation: "slide_from_right",
+                    }}
+                  />
+                </SLATimerProvider>
+              </DraftProvider>
+            </NotificationsProvider>
+          </SyncProvider>
         </AuthProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

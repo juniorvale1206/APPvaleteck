@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useState, useCallback } from "react";
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from "react";
 import type { Photo } from "./api";
+import { KEYS, readJson, writeJson, removeKey } from "./storage";
 
 export type Draft = {
   vehicle_type: "" | "carro" | "moto";
@@ -83,15 +84,57 @@ type Ctx = {
   draft: Draft;
   set: (patch: Partial<Draft>) => void;
   reset: () => void;
+  hasStored: boolean;       // true if there's a persisted draft to restore
+  loadStored: () => Promise<void>;
+  discardStored: () => Promise<void>;
 };
 
 const C = createContext<Ctx>({} as any);
 
+function isMeaningful(d: Draft): boolean {
+  return !!(d.nome || d.sobrenome || d.placa || d.empresa || d.equipamento || d.photos.length > 0 || d.signature_base64);
+}
+
 export function DraftProvider({ children }: { children: React.ReactNode }) {
   const [draft, setDraft] = useState<Draft>(empty);
+  const [hasStored, setHasStored] = useState(false);
+  const saveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // On mount: check if there's a stored draft (don't auto-apply, just flag)
+  useEffect(() => {
+    (async () => {
+      const stored = await readJson<Draft | null>(KEYS.draftCurrent, null);
+      if (stored && isMeaningful(stored)) setHasStored(true);
+    })();
+  }, []);
+
+  // Auto-persist on every change (debounced)
+  useEffect(() => {
+    if (saveRef.current) clearTimeout(saveRef.current);
+    saveRef.current = setTimeout(() => {
+      if (isMeaningful(draft)) writeJson(KEYS.draftCurrent, draft);
+      else removeKey(KEYS.draftCurrent);
+    }, 400);
+    return () => { if (saveRef.current) clearTimeout(saveRef.current); };
+  }, [draft]);
+
   const set = useCallback((patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch })), []);
-  const reset = useCallback(() => setDraft(empty), []);
-  return <C.Provider value={{ draft, set, reset }}>{children}</C.Provider>;
+  const reset = useCallback(() => {
+    setDraft(empty);
+    removeKey(KEYS.draftCurrent);
+    setHasStored(false);
+  }, []);
+  const loadStored = useCallback(async () => {
+    const stored = await readJson<Draft | null>(KEYS.draftCurrent, null);
+    if (stored) setDraft({ ...empty, ...stored });
+    setHasStored(false);
+  }, []);
+  const discardStored = useCallback(async () => {
+    await removeKey(KEYS.draftCurrent);
+    setHasStored(false);
+  }, []);
+
+  return <C.Provider value={{ draft, set, reset, hasStored, loadStored, discardStored }}>{children}</C.Provider>;
 }
 
 export const useDraft = () => useContext(C);
