@@ -26,7 +26,7 @@ type Summary = {
   price_table: Record<string, Record<string, number>>;
 };
 
-const BRL = (n: number) => `R$ ${n.toFixed(2).replace(".", ",")}`;
+const BRL = (n: number) => n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const PERIODS: { id: Period; label: string }[] = [
   { id: "day", label: "Hoje" },
   { id: "week", label: "Semana" },
