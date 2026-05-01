@@ -1,26 +1,43 @@
-import React, { useState, useEffect } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, KeyboardAvoidingView, Platform, Alert } from "react-native";
+import React from "react";
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
-import { Btn, Field, StepProgress } from "../../../../src/components";
-import { useDraft, isValidPlate, formatPlate } from "../../../../src/draft";
-import { colors, fonts, space } from "../../../../src/theme";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { Btn, StepProgress } from "../../../../src/components";
+import { useDraft } from "../../../../src/draft";
+import { colors, fonts, radii, space } from "../../../../src/theme";
 
-export default function StepCliente() {
+export default function StepTipoVeiculo() {
   const router = useRouter();
   const { draft, set } = useDraft();
-  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const choose = (t: "carro" | "moto") => {
+    set({ vehicle_type: t, acessorios: [] });
+  };
 
   const next = () => {
-    const e: Record<string, string> = {};
-    if (!draft.nome.trim()) e.nome = "Obrigatório";
-    if (!draft.sobrenome.trim()) e.sobrenome = "Obrigatório";
-    if (!draft.placa.trim()) e.placa = "Obrigatório";
-    else if (!isValidPlate(draft.placa)) e.placa = "Placa inválida (ex: ABC1D23)";
-    setErrors(e);
-    if (Object.keys(e).length) return;
-    router.push("/(app)/checklist/new/instalacao");
+    if (!draft.vehicle_type) return;
+    router.push("/(app)/checklist/new/cliente");
+  };
+
+  const Card = ({ type, label, icon }: { type: "carro" | "moto"; label: string; icon: React.ReactNode }) => {
+    const active = draft.vehicle_type === type;
+    return (
+      <TouchableOpacity
+        testID={`vehicle-${type}`}
+        activeOpacity={0.85}
+        onPress={() => choose(type)}
+        style={[styles.card, active && styles.cardActive]}
+      >
+        <View style={[styles.iconBg, active && { backgroundColor: colors.primary }]}>{icon}</View>
+        <Text style={[styles.cardLabel, active && { color: colors.primary }]}>{label}</Text>
+        {active && (
+          <View style={styles.check}>
+            <Ionicons name="checkmark-circle" size={22} color={colors.primary} />
+          </View>
+        )}
+      </TouchableOpacity>
+    );
   };
 
   return (
@@ -30,29 +47,25 @@ export default function StepCliente() {
         <Text style={styles.title}>Novo Checklist</Text>
         <View style={{ width: 26 }} />
       </View>
-      <StepProgress step={1} total={5} />
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-          <Text style={styles.section}>Dados do cliente</Text>
-          <Field testID="cliente-nome" label="Nome" required value={draft.nome} onChangeText={(v) => set({ nome: v })} error={errors.nome} placeholder="João" />
-          <Field testID="cliente-sobrenome" label="Sobrenome" required value={draft.sobrenome} onChangeText={(v) => set({ sobrenome: v })} error={errors.sobrenome} placeholder="Silva" />
-          <Field
-            testID="cliente-placa"
-            label="Placa do veículo"
-            required
-            autoCapitalize="characters"
-            value={draft.placa}
-            onChangeText={(v) => set({ placa: formatPlate(v) })}
-            error={errors.placa}
-            placeholder="ABC-1D23"
-            maxLength={8}
+      <StepProgress step={1} total={6} />
+      <ScrollView contentContainerStyle={styles.content}>
+        <Text style={styles.section}>Tipo de veículo</Text>
+        <Text style={styles.helper}>Selecione o tipo para continuar</Text>
+        <View style={styles.grid}>
+          <Card
+            type="carro"
+            label="Carro"
+            icon={<Ionicons name="car-sport" size={68} color={draft.vehicle_type === "carro" ? colors.onPrimary : colors.text} />}
           />
-          <Field testID="cliente-telefone" label="Telefone" value={draft.telefone} onChangeText={(v) => set({ telefone: v })} keyboardType="phone-pad" placeholder="(11) 99999-9999" />
-          <Field testID="cliente-obs" label="Observações iniciais" value={draft.obs_iniciais} onChangeText={(v) => set({ obs_iniciais: v })} placeholder="Opcional" multiline numberOfLines={3} style={{ minHeight: 90, textAlignVertical: "top" } as any} />
-        </ScrollView>
-      </KeyboardAvoidingView>
+          <Card
+            type="moto"
+            label="Moto"
+            icon={<MaterialCommunityIcons name="motorbike" size={68} color={draft.vehicle_type === "moto" ? colors.onPrimary : colors.text} />}
+          />
+        </View>
+      </ScrollView>
       <View style={styles.footer}>
-        <Btn testID="step-next" title="Continuar" icon="arrow-forward" onPress={next} />
+        <Btn testID="step-next" title="Continuar" icon="arrow-forward" onPress={next} disabled={!draft.vehicle_type} />
       </View>
     </SafeAreaView>
   );
@@ -62,6 +75,13 @@ const styles = StyleSheet.create({
   header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: space.lg, paddingTop: space.sm, paddingBottom: space.xs },
   title: { color: colors.text, fontWeight: "800", fontSize: fonts.size.lg },
   content: { padding: space.lg, paddingBottom: 100 },
-  section: { color: colors.text, fontSize: fonts.size.xl, fontWeight: "800", marginBottom: space.md },
+  section: { color: colors.text, fontSize: fonts.size.xxl, fontWeight: "900" },
+  helper: { color: colors.textMuted, fontSize: fonts.size.sm, marginTop: 4, marginBottom: space.xl },
+  grid: { flexDirection: "row", gap: 14 },
+  card: { flex: 1, backgroundColor: colors.surface, borderRadius: radii.xl, padding: space.lg, alignItems: "center", borderWidth: 2, borderColor: colors.border, minHeight: 200, justifyContent: "center", position: "relative" },
+  cardActive: { borderColor: colors.primary, backgroundColor: colors.surfaceAlt },
+  iconBg: { width: 100, height: 100, borderRadius: 50, backgroundColor: colors.surfaceAlt, alignItems: "center", justifyContent: "center", marginBottom: 12 },
+  cardLabel: { color: colors.text, fontSize: fonts.size.xl, fontWeight: "800" },
+  check: { position: "absolute", top: 12, right: 12 },
   footer: { padding: space.lg, borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.bg },
 });

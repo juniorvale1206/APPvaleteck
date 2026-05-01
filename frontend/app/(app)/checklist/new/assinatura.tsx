@@ -57,7 +57,7 @@ export default function StepAssinatura() {
         <Text style={styles.title}>Assinatura</Text>
         <View style={{ width: 26 }} />
       </View>
-      <StepProgress step={4} total={5} />
+      <StepProgress step={5} total={6} />
 
       <View style={styles.content}>
         <Text style={styles.section}>Assinatura do cliente</Text>

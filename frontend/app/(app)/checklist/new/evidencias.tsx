@@ -89,7 +89,7 @@ export default function StepEvidencias() {
         <Text style={styles.title}>Evidências</Text>
         <View style={{ width: 26 }} />
       </View>
-      <StepProgress step={3} total={5} />
+      <StepProgress step={4} total={6} />
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.section}>Fotos do atendimento</Text>
         <Text style={styles.helper}>Mínimo 2 fotos obrigatórias: placa/veículo e equipamento.</Text>

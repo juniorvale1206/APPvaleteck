@@ -6,7 +6,22 @@ import { Ionicons } from "@expo/vector-icons";
 import { Btn, Field, MultiSelect, Select, StepProgress } from "../../../../src/components";
 import { useDraft } from "../../../../src/draft";
 import { api } from "../../../../src/api";
-import { colors, fonts, space } from "../../../../src/theme";
+import { colors, fonts, radii, space } from "../../../../src/theme";
+
+function BatteryChip({ label, active, onPress, testID }: { label: string; active: boolean; onPress: () => void; testID?: string }) {
+  return (
+    <TouchableOpacity testID={testID} onPress={onPress} style={[styles.chip, active && { backgroundColor: colors.primary, borderColor: colors.primary }]}>
+      <Text style={{ color: active ? colors.onPrimary : colors.text, fontWeight: "700" }}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
+function voltageStatus(v: number | null) {
+  if (v === null || isNaN(v)) return { color: colors.textDim, label: "" };
+  if (v >= 12.4) return { color: colors.success, label: "OK" };
+  if (v >= 11.8) return { color: colors.warning, label: "Atenção" };
+  return { color: colors.danger, label: "Baixa" };
+}
 
 export default function StepInstalacao() {
   const router = useRouter();
@@ -15,24 +30,30 @@ export default function StepInstalacao() {
   const [equipments, setEquipments] = useState<string[]>([]);
   const [accessories, setAccessories] = useState<string[]>([]);
   const [serviceTypes, setServiceTypes] = useState<string[]>([]);
+  const [batteryStates, setBatteryStates] = useState<string[]>([]);
+  const [techProblems, setTechProblems] = useState<string[]>([]);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     (async () => {
       try {
-        const [c, e, a, s] = await Promise.all([
+        const [c, e, a, s, b, p] = await Promise.all([
           api.get("/reference/companies"),
           api.get("/reference/equipments"),
-          api.get("/reference/accessories"),
+          api.get("/reference/accessories", { params: draft.vehicle_type ? { vehicle_type: draft.vehicle_type } : {} }),
           api.get("/reference/service-types"),
+          api.get("/reference/battery-states"),
+          api.get("/reference/problems"),
         ]);
         setCompanies(c.data.companies);
         setEquipments(e.data.equipments);
         setAccessories(a.data.accessories);
         setServiceTypes(s.data.service_types);
+        setBatteryStates(b.data.battery_states);
+        setTechProblems(p.data.technician || []);
       } catch {}
     })();
-  }, []);
+  }, [draft.vehicle_type]);
 
   const next = () => {
     const er: Record<string, string> = {};
@@ -43,6 +64,9 @@ export default function StepInstalacao() {
     router.push("/(app)/checklist/new/evidencias");
   };
 
+  const voltageNum = draft.battery_voltage ? parseFloat(draft.battery_voltage.replace(",", ".")) : null;
+  const vs = voltageStatus(voltageNum);
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={["top", "bottom"]}>
       <View style={styles.header}>
@@ -50,14 +74,45 @@ export default function StepInstalacao() {
         <Text style={styles.title}>Instalação</Text>
         <View style={{ width: 26 }} />
       </View>
-      <StepProgress step={2} total={5} />
+      <StepProgress step={3} total={6} />
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
           <Text style={styles.section}>Dados da instalação</Text>
           <Select testID="select-empresa" label="Empresa / Parceiro" required value={draft.empresa as any} options={companies} onChange={(v) => set({ empresa: v })} error={errors.empresa} />
           <Select testID="select-equipamento" label="Equipamento principal" required value={draft.equipamento as any} options={equipments} onChange={(v) => set({ equipamento: v })} error={errors.equipamento} />
           <Select testID="select-tipo" label="Tipo de atendimento" value={draft.tipo_atendimento as any} options={serviceTypes} onChange={(v) => set({ tipo_atendimento: v })} />
-          <MultiSelect testID="select-acessorios" label="Acessórios instalados" values={draft.acessorios} options={accessories} onChange={(v) => set({ acessorios: v })} />
+          <MultiSelect testID="select-acessorios" label={`Acessórios instalados${draft.vehicle_type ? ` (${draft.vehicle_type})` : ""}`} values={draft.acessorios} options={accessories} onChange={(v) => set({ acessorios: v })} />
+
+          <Text style={[styles.section, { marginTop: space.md }]}>Bateria do veículo</Text>
+          <Text style={styles.helper}>Estado e tensão medida</Text>
+          <Text style={styles.label}>Estado da bateria</Text>
+          <View style={styles.chipRow}>
+            {batteryStates.map((b) => (
+              <BatteryChip key={b} label={b} active={draft.battery_state === b} onPress={() => set({ battery_state: draft.battery_state === b ? "" : b })} testID={`battery-${b}`} />
+            ))}
+          </View>
+          <View style={{ marginTop: space.md }}>
+            <Field
+              testID="battery-voltage"
+              label="Tensão medida (V)"
+              value={draft.battery_voltage}
+              onChangeText={(v) => set({ battery_voltage: v.replace(/[^0-9.,]/g, "") })}
+              keyboardType="decimal-pad"
+              placeholder="ex: 12.6"
+              maxLength={5}
+            />
+            {voltageNum !== null && !isNaN(voltageNum) && (
+              <View style={[styles.voltBadge, { backgroundColor: vs.color + "22", borderColor: vs.color }]} testID="voltage-status">
+                <Ionicons name={voltageNum >= 12.4 ? "checkmark-circle" : voltageNum >= 11.8 ? "alert-circle" : "close-circle"} size={16} color={vs.color} />
+                <Text style={{ color: vs.color, fontWeight: "800", marginLeft: 6 }}>{voltageNum.toFixed(1)}V — {vs.label}</Text>
+              </View>
+            )}
+          </View>
+
+          <Text style={[styles.section, { marginTop: space.lg }]}>Problemas constatados pelo técnico</Text>
+          <MultiSelect testID="problems-technician" label="Problemas identificados" values={draft.problems_technician} options={techProblems} onChange={(v) => set({ problems_technician: v })} />
+          <Field testID="problems-technician-other" label="Outros (texto livre)" value={draft.problems_technician_other} onChangeText={(v) => set({ problems_technician_other: v })} multiline numberOfLines={2} style={{ minHeight: 70, textAlignVertical: "top" } as any} placeholder="Outras constatações..." />
+
           <Field testID="instal-obs" label="Observações técnicas" value={draft.obs_tecnicas} onChangeText={(v) => set({ obs_tecnicas: v })} multiline numberOfLines={3} style={{ minHeight: 90, textAlignVertical: "top" } as any} placeholder="Opcional" />
         </ScrollView>
       </KeyboardAvoidingView>
@@ -73,5 +128,10 @@ const styles = StyleSheet.create({
   title: { color: colors.text, fontWeight: "800", fontSize: fonts.size.lg },
   content: { padding: space.lg, paddingBottom: 100 },
   section: { color: colors.text, fontSize: fonts.size.xl, fontWeight: "800", marginBottom: space.md },
+  helper: { color: colors.textMuted, fontSize: fonts.size.sm, marginTop: -10, marginBottom: space.md },
+  label: { color: colors.textMuted, fontSize: fonts.size.sm, fontWeight: "600", marginBottom: 6, letterSpacing: 0.3, textTransform: "uppercase" },
+  chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  chip: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: radii.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  voltBadge: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, borderRadius: radii.md, borderWidth: 1, alignSelf: "flex-start", marginTop: 8 },
   footer: { padding: space.lg, borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.bg },
 });

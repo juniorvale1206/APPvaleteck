@@ -83,16 +83,25 @@ export default function Home() {
       <View style={styles.header}>
         <View>
           <Text style={styles.hello}>Olá, {user?.name?.split(" ")[0] || "Técnico"}</Text>
-          <Text style={styles.headerTitle}>Meus checklists</Text>
+          <Text style={styles.headerTitle}>Histórico</Text>
         </View>
-        <TouchableOpacity
-          testID="profile-button"
-          onPress={() => router.push("/(app)/profile")}
-          style={styles.iconBtn}
-        >
-          <Ionicons name="person-circle-outline" size={28} color={colors.primary} />
-        </TouchableOpacity>
+        <View style={{ flexDirection: "row", gap: 6 }}>
+          <TouchableOpacity testID="agenda-button" onPress={() => router.push("/(app)/agenda")} style={styles.iconBtn}>
+            <Ionicons name="calendar-outline" size={26} color={colors.primary} />
+          </TouchableOpacity>
+          <TouchableOpacity testID="profile-button" onPress={() => router.push("/(app)/profile")} style={styles.iconBtn}>
+            <Ionicons name="person-circle-outline" size={28} color={colors.primary} />
+          </TouchableOpacity>
+        </View>
       </View>
+      <TouchableOpacity testID="open-agenda" onPress={() => router.push("/(app)/agenda")} style={styles.agendaBanner}>
+        <Ionicons name="calendar" size={22} color={colors.onPrimary} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.agendaTitle}>Ver agenda do dia</Text>
+          <Text style={styles.agendaSub}>OS agendadas para você</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={22} color={colors.onPrimary} />
+      </TouchableOpacity>
 
       <View style={styles.searchRow}>
         <Ionicons name="search" size={18} color={colors.textMuted} />
@@ -164,6 +173,9 @@ const styles = StyleSheet.create({
   hello: { color: colors.textMuted, fontSize: fonts.size.sm },
   headerTitle: { color: colors.text, fontSize: fonts.size.xxl, fontWeight: "900" },
   iconBtn: { padding: 6 },
+  agendaBanner: { marginHorizontal: space.lg, marginBottom: space.sm, backgroundColor: colors.primary, borderRadius: radii.md, padding: space.md, flexDirection: "row", alignItems: "center", gap: 12 },
+  agendaTitle: { color: colors.onPrimary, fontWeight: "900", fontSize: fonts.size.md },
+  agendaSub: { color: colors.onPrimary, fontSize: fonts.size.xs, opacity: 0.8 },
   searchRow: {
     marginHorizontal: space.lg,
     backgroundColor: colors.surface,

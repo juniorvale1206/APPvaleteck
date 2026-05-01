@@ -2,8 +2,8 @@ import React, { useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
-import { Btn } from "../../../../src/components";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { Btn, StepProgress } from "../../../../src/components";
 import { useDraft } from "../../../../src/draft";
 import { api, apiErrorMessage } from "../../../../src/api";
 import { colors, fonts, radii, space } from "../../../../src/theme";
@@ -25,24 +25,21 @@ export default function Revisao() {
   const submit = async (status: "rascunho" | "enviado") => {
     setLoading(true);
     try {
-      const payload = { ...draft, status };
+      const payload: any = {
+        ...draft,
+        battery_voltage: draft.battery_voltage ? parseFloat(draft.battery_voltage.replace(",", ".")) : null,
+        status,
+      };
       const { data } = await api.post("/checklists", payload);
       reset();
       Alert.alert(
         status === "enviado" ? "Checklist enviado!" : "Rascunho salvo",
         status === "enviado" ? `Número: ${data.numero}` : "Você pode continuar depois.",
-        [
-          {
-            text: "OK",
-            onPress: () => router.replace({ pathname: "/(app)/checklist/[id]", params: { id: data.id } }),
-          },
-        ]
+        [{ text: "OK", onPress: () => router.replace({ pathname: "/(app)/checklist/[id]", params: { id: data.id } }) }]
       );
     } catch (e: any) {
       Alert.alert("Erro", apiErrorMessage(e));
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
   const onSend = () => {
@@ -53,6 +50,9 @@ export default function Revisao() {
   };
 
   const editStep = (path: string) => router.push(path as any);
+  const voltage = draft.battery_voltage ? `${draft.battery_voltage}V` : "";
+  const problemsClient = [...draft.problems_client, draft.problems_client_other].filter(Boolean).join(", ");
+  const problemsTech = [...draft.problems_technician, draft.problems_technician_other].filter(Boolean).join(", ");
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={["top", "bottom"]}>
@@ -61,17 +61,35 @@ export default function Revisao() {
         <Text style={styles.title}>Revisão</Text>
         <View style={{ width: 26 }} />
       </View>
+      <StepProgress step={6} total={6} />
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.section}>Confira antes de enviar</Text>
 
         <View style={styles.card}>
           <View style={styles.cardHeader}>
-            <Text style={styles.cardTitle}>Cliente</Text>
+            <Text style={styles.cardTitle}>Veículo</Text>
             <TouchableOpacity onPress={() => editStep("/(app)/checklist/new")}><Text style={styles.editLink}>Editar</Text></TouchableOpacity>
+          </View>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+            {draft.vehicle_type === "moto" ? (
+              <MaterialCommunityIcons name="motorbike" size={32} color={colors.primary} />
+            ) : (
+              <Ionicons name="car-sport" size={32} color={colors.primary} />
+            )}
+            <Text style={styles.vehicleLabel}>{draft.vehicle_type === "moto" ? "Moto" : draft.vehicle_type === "carro" ? "Carro" : "—"}</Text>
+          </View>
+        </View>
+
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>Cliente</Text>
+            <TouchableOpacity onPress={() => editStep("/(app)/checklist/new/cliente")}><Text style={styles.editLink}>Editar</Text></TouchableOpacity>
           </View>
           <Row label="Nome" value={`${draft.nome} ${draft.sobrenome}`.trim()} />
           <Row label="Placa" value={draft.placa} />
           <Row label="Telefone" value={draft.telefone} />
+          <Row label="Obs. cliente" value={draft.obs_iniciais} />
+          <Row label="Problemas" value={problemsClient} />
         </View>
 
         <View style={styles.card}>
@@ -83,6 +101,9 @@ export default function Revisao() {
           <Row label="Equipamento" value={draft.equipamento} />
           <Row label="Tipo" value={draft.tipo_atendimento} />
           <Row label="Acessórios" value={draft.acessorios.join(", ") || "Nenhum"} />
+          <Row label="Bateria" value={[draft.battery_state, voltage].filter(Boolean).join(" • ")} />
+          <Row label="Problemas técnico" value={problemsTech} />
+          <Row label="Obs. técnicas" value={draft.obs_tecnicas} />
         </View>
 
         <View style={styles.card}>
@@ -123,8 +144,9 @@ const styles = StyleSheet.create({
   cardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: space.sm },
   cardTitle: { color: colors.text, fontWeight: "800", fontSize: fonts.size.md },
   editLink: { color: colors.primary, fontWeight: "700" },
+  vehicleLabel: { color: colors.text, fontSize: fonts.size.lg, fontWeight: "800" },
   row: { flexDirection: "row", paddingVertical: 6 },
-  rowLabel: { color: colors.textMuted, width: 110, fontSize: fonts.size.sm },
+  rowLabel: { color: colors.textMuted, width: 120, fontSize: fonts.size.sm },
   rowValue: { color: colors.text, flex: 1, fontSize: fonts.size.sm, fontWeight: "600" },
   timestamp: { color: colors.textDim, fontSize: fonts.size.xs, textAlign: "center", marginTop: space.md },
   footer: { padding: space.lg, borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.bg },

@@ -1,0 +1,38 @@
+{
+  "summary": "Valeteck v2 testing — Backend 12/12 PASS (agenda 3 OS, accessories carro=21/moto=17, battery-states=4, problems client=11/tech=10, checklist v2 fields persist, appointment status transitions agendado→em_andamento[rascunho] / →concluido[enviado]). Frontend (mobile 390x844): Home banner 'Ver agenda do dia' + calendar header icon present, /agenda lists the 3 OS with carro/moto icons + plate/empresa/datetime/endereco, tapping an OS prefills draft (nome, sobrenome, placa, empresa, vehicle_type, appointment_id) and opens /checklist/new (Tipo veículo) with vehicle_type pre-selected. Wizard 6 steps confirmed: 1/6 Tipo (2 large cards, yellow highlight, continue disabled when none) → 2/6 Cliente (multi-select 'Problemas relatados' visible) → 3/6 Instalação (acessórios filtrados '(MOTO)'/'(CARRO)' por vehicle_type, 4 chips de estado da bateria, input 'TENSÃO MEDIDA (V)' com badge semáforo: 12.6V→verde 'OK', 11.5V→vermelho 'Baixa', limites verde≥12.4 / amarelo 11.8-12.4 / vermelho<11.8 funcionando, 'Problemas constatados pelo técnico' visível). Detail screen renderiza Veículo (Moto), Bateria (Apresentando falhas • 10.9V), Problemas relatados (lista cliente + outros), Problemas técnico (lista tech + outros).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_valeteck_v2.py",
+    "/app/test_reports/pytest/v2_results.xml"
+  ],
+  "action_items": [
+    "Optional: console warnings 'TouchableWithoutFeedback is deprecated', 'shadow* style props deprecated', 'props.pointerEvents deprecated' — non-blocking, mostly from RN libs.",
+    "seed_appointments() function exists in server.py but is NOT called in @app.on_event('startup'). Current 3 OS were inserted manually in DB. If the DB is wiped, the agenda will be empty until seed runs. Recommend awaiting seed_appointments(tech_user_id) inside on_startup after seed_users().",
+    "Etapas 4/6 (Evidências) e 5/6 (Assinatura) e 6/6 (Revisão) não foram exercitadas via UI Playwright (requerem captura de fotos/canvas signature) — backend valida e retorna corretamente; Detail screen confirma renderização final dos campos v2."
+  ],
+  "critical_code_review_comments": [
+    "server.py: seed_appointments() é definido mas não invocado em on_startup — OS hoje só existem porque foram inseridas manualmente. Risco de regressão se DB for resetado.",
+    "server.py: arquivo cresceu para ~620 linhas; ainda OK para MVP, mas próximo do limite de 700 lines — considerar split em routers (auth, reference, appointments, checklists) e seed module.",
+    "Endpoint POST /api/checklists com appointment_id atualiza appointment status corretamente, porém ao DELETE de um rascunho com appointment_id, o appointment fica órfão em status 'em_andamento' com checklist_id apontando para id deletado — sugerir reverter status ao deletar rascunho vinculado.",
+    "battery_voltage é Optional[float] no Pydantic; cliente envia parsed float, mas conversão de string com vírgula é feita no frontend (replace ',' -> '.'). OK.",
+    "Frontend instalacao.tsx: voltageStatus thresholds (verde≥12.4, amarelo≥11.8, vermelho<11.8) confirmados visualmente."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_valeteck_v2.py (created)"
+  ],
+  "success_rate": {"backend": "100% (12/12)", "frontend": "100% nos fluxos exercitados (agenda, prefill, etapas 1-3, detail). Etapas 4/5/6 não exercitadas via UI mas backend cobre."},
+  "seed_data_creation": "Created 1 enviado checklist (id=803110fa..., placa=XPT1A99, vehicle_type=moto, battery=Apresentando falhas/10.9V) for Detail screen verification — não pode ser deletado por design (apenas rascunhos). Test rascunhos criados foram deletados via DELETE. Appointments resetados a 'agendado' com checklist_id=null ao final.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "v2 testIDs: agenda-button, open-agenda, agenda-back, appt-OS-2026-0001/2/3, vehicle-carro, vehicle-moto, step-next (multiple instances may render — use .first visible), back-btn, battery-{Nova|Em bom estado|Usada|Apresentando falhas}, battery-voltage, voltage-status. Login: tecnico@valeteck.com / tecnico123. URL base: EXPO_PUBLIC_BACKEND_URL=https://installer-track-1.preview.emergentagent.com. Próximas etapas (4 evidências, 5 assinatura, 6 revisão) precisam ser exercitadas com mocks de ImagePicker/Signature canvas.",
+  "rca_of_issue": "N/A — todos os requisitos de v2 verificados. Único achado relevante: seed_appointments não é chamado no startup; main agent deve adicionar `await seed_appointments(<tech_user_id>)` em on_startup ou criar um endpoint admin para reseed."
+}

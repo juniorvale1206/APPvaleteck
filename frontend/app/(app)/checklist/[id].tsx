@@ -71,10 +71,16 @@ export default function ChecklistDetail() {
         )}
 
         <View style={styles.card}>
+          <Text style={styles.cardTitle}>Veículo</Text>
+          <Row label="Tipo" value={item.vehicle_type === "moto" ? "Moto" : item.vehicle_type === "carro" ? "Carro" : ""} />
+        </View>
+
+        <View style={styles.card}>
           <Text style={styles.cardTitle}>Cliente</Text>
           <Row label="Nome" value={`${item.nome} ${item.sobrenome}`} />
           <Row label="Telefone" value={item.telefone || ""} />
           <Row label="Observações" value={item.obs_iniciais || ""} />
+          <Row label="Problemas relatados" value={[...(item.problems_client || []), item.problems_client_other || ""].filter(Boolean).join(", ")} />
         </View>
 
         <View style={styles.card}>
@@ -83,6 +89,8 @@ export default function ChecklistDetail() {
           <Row label="Equipamento" value={item.equipamento} />
           <Row label="Tipo" value={item.tipo_atendimento || ""} />
           <Row label="Acessórios" value={item.acessorios?.join(", ") || ""} />
+          <Row label="Bateria" value={[item.battery_state || "", item.battery_voltage ? `${item.battery_voltage}V` : ""].filter(Boolean).join(" • ")} />
+          <Row label="Problemas técnico" value={[...(item.problems_technician || []), item.problems_technician_other || ""].filter(Boolean).join(", ")} />
           <Row label="Obs. técnicas" value={item.obs_tecnicas || ""} />
         </View>
 
