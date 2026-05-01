@@ -10,6 +10,20 @@ class PhotoIn(BaseModel):
     photo_id: Optional[str] = ""
 
 
+class RemovedEquipmentIn(BaseModel):
+    """Equipamento retirado/trocado durante a O.S (Retirada|Manutenção|Garantia).
+    Ao enviar o checklist, será criado um item em inventário com status=pending_reverse.
+    """
+    tipo: str = "Rastreador"          # Rastreador | Bloqueador | Câmera | Outro
+    modelo: Optional[str] = ""
+    imei: Optional[str] = ""
+    iccid: Optional[str] = ""
+    serie: Optional[str] = ""
+    empresa: Optional[str] = ""       # se vazio, herda a empresa do checklist
+    estado: Optional[str] = "funcional"  # funcional | avariado | defeituoso
+    notes: Optional[str] = ""
+
+
 class ChecklistInput(BaseModel):
     # Veículo
     vehicle_type: Optional[str] = ""
@@ -57,6 +71,9 @@ class ChecklistInput(BaseModel):
     appointment_id: Optional[str] = ""
     # Estado
     status: str = "rascunho"
+    # FASE 3 — Integração O.S ↔ Estoque
+    removed_equipments: List[RemovedEquipmentIn] = []   # p/ Retirada/Manutenção/Garantia
+    installed_from_inventory_id: Optional[str] = None   # item do estoque usado na instalação
 
 
 class ChecklistOut(BaseModel):
@@ -105,3 +122,6 @@ class ChecklistOut(BaseModel):
     created_at: str
     updated_at: str
     sent_at: Optional[str] = None
+    removed_equipments: List[RemovedEquipmentIn] = []
+    installed_from_inventory_id: Optional[str] = None
+    inventory_ops: List[dict] = []  # log de operações aplicadas ao estoque (criado/atualizado)

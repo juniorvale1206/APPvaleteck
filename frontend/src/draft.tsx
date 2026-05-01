@@ -39,6 +39,9 @@ export type Draft = {
   location_available: boolean;
   signature_base64: string;
   appointment_id: string;
+  // FASE 3 — Integração O.S ↔ Estoque
+  removed_equipments: { tipo: string; modelo?: string; imei?: string; iccid?: string; serie?: string; estado?: string; notes?: string }[];
+  installed_from_inventory_id?: string | null;
 };
 
 const empty: Draft = {
@@ -78,6 +81,8 @@ const empty: Draft = {
   location_available: false,
   signature_base64: "",
   appointment_id: "",
+  removed_equipments: [],
+  installed_from_inventory_id: null,
 };
 
 type Ctx = {

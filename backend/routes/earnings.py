@@ -79,11 +79,23 @@ async def my_earnings(period: str = "month", user=Depends(get_current_user)):
         ))
     count = len(jobs)
     avg_min = (total_elapsed // count // 60) if count > 0 and total_elapsed > 0 else 0
+
+    # Penalidades de equipamentos não devolvidos (Fase 2)
+    # Independentes do período - pegamos o estado atual do inventário.
+    inv_cursor = db.inventory.find({"user_id": user["id"]}, {"_id": 0})
+    inv_docs = await inv_cursor.to_list(length=500)
+    from services.inventory import compute_penalty_total, enrich_reverse_fields
+    enriched_inv = [enrich_reverse_fields(d) for d in inv_docs]
+    penalty = compute_penalty_total(enriched_inv)
+    penalty_total = penalty["penalty_total"]
+    penalty_count = penalty["overdue_count"]
+    total_net_gross = round(total_base + total_bonus, 2)
+
     return EarningsSummary(
         period=period,
         total_base=round(total_base, 2),
         total_bonus=round(total_bonus, 2),
-        total_net=round(total_base + total_bonus, 2),
+        total_net=total_net_gross,
         count=count,
         avg_elapsed_min=avg_min,
         fast_count=fast_count,
@@ -91,4 +103,7 @@ async def my_earnings(period: str = "month", user=Depends(get_current_user)):
         breakdown_by_type=by_type,
         jobs=jobs,
         price_table=PRICE_TABLE,
+        penalty_total=round(penalty_total, 2),
+        penalty_count=penalty_count,
+        net_after_penalty=round(total_net_gross - penalty_total, 2),
     )

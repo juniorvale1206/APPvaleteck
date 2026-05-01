@@ -12,11 +12,87 @@ from core.security import get_current_user
 from core.config import CLOUDINARY_ENABLED, CLOUDINARY_FOLDER
 from core.storage import upload_base64_image
 from services.alerts import build_alerts
+from services.inventory import categorize_equipment, default_equipment_value, compute_reverse_deadline
 from services.pdf import render_checklist_pdf
 from services.plates import normalize_plate, valid_plate
-from models.checklist import ChecklistInput, ChecklistOut, PhotoIn
+from models.checklist import ChecklistInput, ChecklistOut, PhotoIn, RemovedEquipmentIn
 
 router = APIRouter(prefix="/checklists", tags=["checklists"])
+
+
+async def _apply_inventory_ops(payload: ChecklistInput, user_id: str, checklist_id: str, numero: str) -> List[dict]:
+    """Sincroniza O.S ↔ Estoque quando o checklist é ENVIADO.
+
+    Regras:
+    - Para cada `removed_equipments`: cria item no estoque com status=pending_reverse
+      (deadline calculado) — vinculado ao checklist_id.
+    - Se `installed_from_inventory_id`: move o item do estoque do técnico para
+      status=installed, grava placa + checklist_id.
+    - Match por IMEI: se não veio installed_from_inventory_id mas há item do técnico
+      com status=with_tech e IMEI igual ao do checklist, faz o match automático.
+    """
+    ops: List[dict] = []
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+
+    # 1) Equipamentos RETIRADOS → criar em pending_reverse
+    for eq in payload.removed_equipments or []:
+        cat = categorize_equipment(eq.tipo, eq.modelo or "")
+        item_id = str(uuid.uuid4())
+        doc = {
+            "id": item_id,
+            "user_id": user_id,
+            "tipo": eq.tipo or "Rastreador",
+            "modelo": eq.modelo or "",
+            "imei": (eq.imei or "").strip(),
+            "iccid": (eq.iccid or "").strip(),
+            "serie": (eq.serie or "").strip(),
+            "empresa": eq.empresa or payload.empresa,
+            "status": "pending_reverse",
+            "checklist_id": checklist_id,
+            "placa": normalize_plate(payload.placa),
+            "tracking_code": "",
+            "equipment_category": cat,
+            "equipment_value": default_equipment_value(cat),
+            "pending_reverse_at": now_iso,
+            "reverse_deadline_at": compute_reverse_deadline(now).isoformat(),
+            "reverse_notes": eq.notes or f"Retirado da O.S {numero} (estado: {eq.estado or 'funcional'})",
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+        await db.inventory.insert_one(doc)
+        ops.append({
+            "op": "removed_added_to_reverse",
+            "inventory_id": item_id,
+            "modelo": doc["modelo"], "imei": doc["imei"], "serie": doc["serie"],
+            "category": cat, "value": doc["equipment_value"],
+        })
+
+    # 2) Equipamento INSTALADO (match)
+    target_id = payload.installed_from_inventory_id
+    if not target_id:
+        imei = (payload.imei or "").strip()
+        if imei:
+            found = await db.inventory.find_one(
+                {"user_id": user_id, "imei": imei, "status": {"$in": ["with_tech", "in_transit_to_tech"]}},
+                {"_id": 0, "id": 1},
+            )
+            if found:
+                target_id = found["id"]
+    if target_id:
+        result = await db.inventory.update_one(
+            {"id": target_id, "user_id": user_id},
+            {"$set": {
+                "status": "installed",
+                "placa": normalize_plate(payload.placa),
+                "checklist_id": checklist_id,
+                "updated_at": now_iso,
+            }},
+        )
+        if result.modified_count:
+            ops.append({"op": "installed_from_inventory", "inventory_id": target_id})
+
+    return ops
 
 
 def _validate_send(c: dict) -> List[str]:
@@ -167,10 +243,16 @@ async def create_checklist(payload: ChecklistInput, user=Depends(get_current_use
         "signature_base64": sig_b64_residual,
         "signature_url": sig_url,
         "alerts": alerts,
+        "removed_equipments": [r.dict() for r in (payload.removed_equipments or [])],
+        "installed_from_inventory_id": payload.installed_from_inventory_id,
+        "inventory_ops": [],
         "created_at": now_iso,
         "updated_at": now_iso,
         "sent_at": now_iso if status == "enviado" else None,
     }
+    # Sincroniza estoque ANTES de inserir para gravar o log
+    if status == "enviado":
+        doc["inventory_ops"] = await _apply_inventory_ops(payload, user["id"], cid, numero)
     await db.checklists.insert_one(doc)
     doc.pop("_id", None)
     if payload.appointment_id:

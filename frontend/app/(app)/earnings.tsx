@@ -24,6 +24,9 @@ type Summary = {
   breakdown_by_type: Record<string, number>;
   jobs: Job[];
   price_table: Record<string, Record<string, number>>;
+  penalty_total?: number;
+  penalty_count?: number;
+  net_after_penalty?: number;
 };
 
 const BRL = (n: number) => n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -122,6 +125,37 @@ export default function Earnings() {
                   </View>
                 </View>
               </View>
+
+              {/* Penalidade por equipamentos vencidos */}
+              {!!summary.penalty_total && summary.penalty_total > 0 && (
+                <View style={styles.penaltyCard} testID="penalty-card">
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                    <Ionicons name="warning" size={20} color="#EF4444" />
+                    <Text style={styles.penaltyTitle}>Penalidade por equipamentos não devolvidos</Text>
+                  </View>
+                  <View style={{ flexDirection: "row", alignItems: "baseline", justifyContent: "space-between" }}>
+                    <Text style={styles.penaltyDesc}>
+                      {summary.penalty_count} item(ns) vencido(s)
+                    </Text>
+                    <Text style={styles.penaltyAmount}>- {BRL(summary.penalty_total)}</Text>
+                  </View>
+                  <View style={styles.penaltyDivider} />
+                  <View style={{ flexDirection: "row", alignItems: "baseline", justifyContent: "space-between" }}>
+                    <Text style={styles.netLabel}>Líquido após descontos</Text>
+                    <Text style={styles.netAmount} testID="net-after-penalty">
+                      {BRL(summary.net_after_penalty || 0)}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    testID="goto-closure"
+                    onPress={() => router.push("/estoque/fechamento")}
+                    style={styles.penaltyCTA}
+                  >
+                    <Ionicons name="calendar-outline" size={16} color={colors.onPrimary} />
+                    <Text style={styles.penaltyCTATxt}>Ver fechamento mensal</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
 
               {/* Stats */}
               <View style={styles.statsRow}>
@@ -278,4 +312,20 @@ const styles = StyleSheet.create({
   priceVal: { color: colors.text, fontWeight: "700", fontSize: fonts.size.sm },
   infoBox: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "#143A22", padding: 8, borderRadius: radii.sm, marginTop: 8 },
   infoTxt: { color: colors.success, fontSize: fonts.size.xs, flex: 1, fontWeight: "600" },
+  // Penalty
+  penaltyCard: {
+    backgroundColor: "#FEF2F2", borderColor: "#FCA5A5", borderWidth: 1,
+    padding: space.md, borderRadius: radii.md, marginBottom: space.md,
+  },
+  penaltyTitle: { color: "#7F1D1D", fontWeight: "900", fontSize: fonts.size.sm, flex: 1 },
+  penaltyDesc: { color: "#991B1B", fontSize: fonts.size.sm, fontWeight: "600" },
+  penaltyAmount: { color: "#DC2626", fontWeight: "900", fontSize: fonts.size.lg },
+  penaltyDivider: { height: 1, backgroundColor: "#FCA5A5", marginVertical: 10 },
+  netLabel: { color: "#374151", fontWeight: "700", fontSize: fonts.size.sm },
+  netAmount: { color: "#111827", fontWeight: "900", fontSize: fonts.size.lg },
+  penaltyCTA: {
+    marginTop: 12, paddingVertical: 10, backgroundColor: "#7F1D1D",
+    borderRadius: radii.md, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 6,
+  },
+  penaltyCTATxt: { color: colors.onPrimary, fontWeight: "900", fontSize: fonts.size.sm },
 });

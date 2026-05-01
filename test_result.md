@@ -278,15 +278,112 @@ frontend:
             CONCLUSÃO: O interceptor refresh-on-401 + as novas chaves AsyncStorage estão sólidos.
             Cenários críticos (transparente e session-expired) passaram. Pronto para fechar a task.
 
+  - task: "Fase 2 - Fechamento Mensal + Penalidades em Ganhos"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/closures.py + /app/backend/routes/earnings.py + /app/backend/services/inventory.py + /app/backend/models/closure.py + /app/backend/models/earnings.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            ==================== FASE 2 — FULL PASS ====================
+            Base URL: https://installer-track-1.preview.emergentagent.com/api
+            Login: tecnico@valeteck.com/tecnico123 OK (user_id=473b800f-...).
+
+            1) GET /api/earnings/me (day|week|month|all) — TODOS 4 OK:
+               - payload contém os 3 novos campos: penalty_total=300.0,
+                 penalty_count=1, net_after_penalty=1453.0
+               - Conferido: net_after_penalty == round(total_net - penalty_total, 2)
+                 para os 4 periods.
+
+            2) GET /api/inventory/monthly-closure — snapshot em tempo real:
+               - ?month=2026-05 → id:null, user_id, month:2026-05, confirmed_at:null,
+                 breakdown completo (total_gross, total_jobs, inventory_total,
+                 overdue_count, penalty_total, net_after_penalty, overdue_items),
+                 signature_base64:"", notes:"" ✓
+               - sem parâmetro → usa mês corrente (2026-05 no momento do teste) ✓
+               - ?month=abc → 400 "month inválido. Use formato YYYY-MM." ✓
+
+            3) POST /api/inventory/monthly-closure/confirm:
+               - 2026-03 (mês ainda não confirmado na base) → 200 com id UUID,
+                 confirmed_at preenchido, breakdown idêntico ao snapshot prévio ✓
+               - Reconfirmar 2026-03 → 400 "Fechamento do mês já foi confirmado
+                 anteriormente." (PT-BR exato) ✓
+               - month=abc → 400 "month inválido..." ✓
+               - Reconfirmar 2026-04 (já existia) → 400 (bloqueio mantém-se) ✓
+
+            4) GET /api/inventory/monthly-closure/history:
+               - Retornou 3 fechamentos: [2026-04, 2026-03, 2025-12],
+                 ordem DESC confirmada ✓
+
+            Conclusão: FASE 2 100% operacional. Penalidades calculadas corretamente
+            (1 item em pending_reverse com valor R$300 = rastreador) e propagadas
+            para /earnings/me e monthly-closure. PT-BR correto.
+
+  - task: "Fase 3 - Integração O.S ↔ Estoque (removed_equipments + installed_from_inventory)"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/checklists.py + /app/backend/models/checklist.py + /app/backend/services/inventory.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            ==================== FASE 3 — FULL PASS ====================
+
+            5) POST /api/checklists (Manutenção, status=enviado) com removed_equipments=[{
+               tipo:"Rastreador", modelo:"XP-Antigo", imei:"111222333444555",
+               serie:"SN-OLD-T", estado:"defeituoso"}] + imei:"999111222333444":
+               - Response tem removed_equipments com 1 item (modelo=XP-Antigo) ✓
+               - Response tem inventory_ops[0] com op=removed_added_to_reverse,
+                 inventory_id (UUID), modelo, category=rastreador, value=300.0 ✓
+               - GET /api/inventory/me: novo item com status=pending_reverse,
+                 modelo=XP-Antigo, equipment_value=300, pending_reverse_at preenchido,
+                 reverse_deadline_at calculado ✓
+               - O R$300 aparece em /earnings/me.penalty_total no baseline (item
+                 seeded em pending_reverse já overdue vinha contando — os novos
+                 itens terão prazo de ~5 dias, então só entram em penalty_total
+                 após vencimento; conforme brief, "não testar prazo — apenas a
+                 criação").
+
+            6) POST /api/checklists (Instalação, status=enviado) com imei de item
+               já em with_tech do técnico (usei item real do seed: imei encontrado
+               via /inventory/me filtrado status=with_tech):
+               - Response inventory_ops contém op=installed_from_inventory com
+                 inventory_id do item ✓
+               - GET /api/inventory/me: item movido para status=installed,
+                 placa+checklist_id atualizados ✓
+
+            7) POST /api/checklists (Instalação) com installed_from_inventory_id
+               explícito (outro item with_tech):
+               - Response inventory_ops com op=installed_from_inventory ✓
+               - Item marcado installed com placa=XYZ9K88 e checklist_id correto ✓
+
+            8) REGRESSÃO — todos 200 OK:
+               - GET /api/inventory/me ✓
+               - GET /api/inventory/summary ✓
+               - POST /api/inventory/{id}/transfer ✓
+               - GET /api/appointments ✓
+               - GET /api/rankings/weekly ✓
+               - GET /api/gamification/profile ✓
+               - GET /api/auth/me ✓
+
+            Conclusão: Integração O.S ↔ Estoque funcionando ponta-a-ponta.
+            25 assertions — 0 falhas.
+
 metadata:
   created_by: "main_agent"
-  version: "2.0"
-  test_sequence: 11
+  version: "2.1"
+  test_sequence: 12
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Fase 1 - Logística Reversa: backend (summary, deadline, transfer com carrier/tracking) + frontend (UI vencidos, modal reversa)"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -403,3 +500,51 @@ agent_communication:
         CREDENCIAIS (de /app/memory/test_credentials.md):
         - tecnico@valeteck.com / tecnico123
         - admin@valeteck.com / admin123
+
+    - agent: "testing"
+      message: |
+        ==================== FASE 2 + FASE 3 — BACKEND VALIDATION — FULL PASS ====================
+        Suite: /app/backend_test.py contra
+        https://installer-track-1.preview.emergentagent.com/api
+        Resultado: 25/25 PASS, 0 falhas.
+
+        FASE 2 — Fechamento Mensal + Penalidades (OK):
+        - /earnings/me (day|week|month|all) inclui penalty_total=300.0,
+          penalty_count=1, net_after_penalty=total_net-penalty_total ✓ nos 4 periods.
+        - GET /inventory/monthly-closure?month=2026-05 retorna snapshot realtime
+          correto (id:null, confirmed_at:null, breakdown completo).
+        - Sem query param → usa mês corrente.
+        - month=abc → 400 PT-BR "month inválido. Use formato YYYY-MM."
+        - POST /confirm 2026-03 (vazio/novo) → 200 com id + confirmed_at;
+          reconfirmar → 400 "Fechamento do mês já foi confirmado anteriormente."
+        - POST /confirm 2026-04 (existia do teste anterior) → 400 (mantém bloqueio).
+        - GET /history → [2026-04, 2026-03, 2025-12] sorted desc ✓.
+
+        FASE 3 — Integração O.S ↔ Estoque (OK):
+        - POST /checklists Manutenção com removed_equipments: criou item no
+          /inventory/me com status=pending_reverse, modelo=XP-Antigo,
+          equipment_value=300.0 (rastreador), pending_reverse_at e
+          reverse_deadline_at preenchidos. Response tem inventory_ops[0] com
+          op=removed_added_to_reverse + inventory_id + modelo + category + value.
+        - POST /checklists Instalação com IMEI que batia com item with_tech do
+          técnico → op=installed_from_inventory, item movido para status=installed
+          com placa+checklist_id atualizados.
+        - POST /checklists Instalação com installed_from_inventory_id explícito
+          → mesmo comportamento.
+
+        REGRESSÃO (OK): /inventory/me, /inventory/summary, /inventory/{id}/transfer,
+        /appointments, /rankings/weekly, /gamification/profile, /auth/me — todos 200.
+
+        Observações:
+        - "Empresa" deve ser exatamente uma de COMPANIES (Rastremix|GPS My|
+          GPS Joy|Topy Pro|Telensat|Valeteck). O brief sugeria "RODO-LOG" mas
+          isso retorna 400 "Empresa inválida" — ajustei o teste para usar
+          "Rastremix". NÃO é bug, é validação correta.
+        - CLOUDINARY_ENABLED=False: fotos/assinatura continuam em base64,
+          conforme esperado.
+        - O R$300 do item de seed em pending_reverse (overdue) já aparece em
+          /earnings/me.penalty_total no baseline. Itens criados por checklists
+          Manutenção entram em penalty_total apenas após o reverse_deadline_at
+          (conforme brief: "não testar prazo — apenas a criação").
+
+        Tudo pronto. Fases 2 e 3 100% operacionais no backend.

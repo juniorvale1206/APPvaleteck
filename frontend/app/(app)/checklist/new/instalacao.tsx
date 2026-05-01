@@ -9,6 +9,7 @@ import { api } from "../../../../src/api";
 import { SLABadge } from "../../../../src/SLABadge";
 import { useSLATimer } from "../../../../src/slatimer";
 import BarcodeScanner from "../../../../src/scanner";
+import { RemovedEquipmentsSection } from "../../../../src/RemovedEquipmentsSection";
 import { colors, fonts, radii, space } from "../../../../src/theme";
 
 function Chip({ label, active, onPress, testID }: { label: string; active: boolean; onPress: () => void; testID?: string }) {
@@ -89,6 +90,14 @@ export default function StepInstalacao() {
           <Select testID="select-empresa" label="Empresa / Parceiro" required value={draft.empresa as any} options={companies} onChange={(v) => set({ empresa: v })} error={errors.empresa} />
           <Select testID="select-equipamento" label="Equipamento principal" required value={draft.equipamento as any} options={equipments} onChange={(v) => set({ equipamento: v })} error={errors.equipamento} />
           <Select testID="select-tipo" label="Tipo de atendimento" value={draft.tipo_atendimento as any} options={serviceTypes} onChange={(v) => set({ tipo_atendimento: v })} />
+
+          {/* FASE 3 — Equipamentos Retirados (aparece em Retirada/Manutenção/Garantia) */}
+          {["Retirada", "Manutenção", "Garantia"].includes(draft.tipo_atendimento) && (
+            <RemovedEquipmentsSection
+              items={draft.removed_equipments}
+              onChange={(v) => set({ removed_equipments: v })}
+            />
+          )}
 
           <Text style={[styles.section, { marginTop: space.md }]}>Identificação do dispositivo</Text>
           <Text style={styles.helper}>Escaneie ou digite o IMEI e ICCID do rastreador</Text>

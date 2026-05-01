@@ -24,7 +24,7 @@ class EarningsSummary(BaseModel):
     period: str
     total_base: float
     total_bonus: float
-    total_net: float
+    total_net: float              # bruto (base + bonus) SEM penalidades
     count: int
     avg_elapsed_min: int
     fast_count: int
@@ -32,3 +32,7 @@ class EarningsSummary(BaseModel):
     breakdown_by_type: dict
     jobs: List[EarningJob]
     price_table: dict
+    # Penalidades de equipamentos não devolvidos (Fase 2)
+    penalty_total: float = 0.0    # valor que será descontado
+    penalty_count: int = 0         # quantos itens vencidos
+    net_after_penalty: float = 0.0 # total_net - penalty_total

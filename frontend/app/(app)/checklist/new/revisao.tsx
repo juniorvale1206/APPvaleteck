@@ -131,6 +131,14 @@ export default function Revisao() {
           <Row label="Empresa" value={draft.empresa} />
           <Row label="Equipamento" value={draft.equipamento} />
           <Row label="Tipo" value={draft.tipo_atendimento} />
+          {draft.removed_equipments && draft.removed_equipments.length > 0 && (
+            <Row
+              label={`Retirados (${draft.removed_equipments.length})`}
+              value={draft.removed_equipments
+                .map((e) => `${e.tipo}${e.modelo ? ` ${e.modelo}` : ""}${e.imei ? ` IMEI ${e.imei}` : ""}${e.estado ? ` (${e.estado})` : ""}`)
+                .join(" • ")}
+            />
+          )}
           <Row label="IMEI" value={draft.imei} />
           <Row label="ICCID" value={draft.iccid} />
           <Row label="Acessórios" value={draft.acessorios.join(", ") || "Nenhum"} />

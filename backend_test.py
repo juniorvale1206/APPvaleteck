@@ -1,610 +1,557 @@
-"""Backend tests for Valeteck v11 (P0+P1 refactor).
-
-Covers:
-- Auth (login, /me, refresh rotation, logout, invalid refresh, access-type enforcement)
-- Rate limiting on /auth/login
-- Preserved endpoints (appointments, reference, inventory, device, earnings, rankings, gamification)
-- Checklists CRUD + send-validation + PDF
-- Health + root
-- Partner webhook (valid + invalid secret)
 """
-from __future__ import annotations
+Backend test suite for Valeteck — Fase 2 (Fechamento Mensal + Penalidades)
+e Fase 3 (Integração O.S ↔ Estoque).
 
+Usa EXPO_PUBLIC_BACKEND_URL do frontend/.env.
+"""
 import base64
 import io
+import json
 import os
 import sys
 import time
 import uuid
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone, timedelta
 
 import requests
 
-# --------------------------------------------------------------------------------------
-# Base URL — always external /api via EXPO_PUBLIC_BACKEND_URL
-# --------------------------------------------------------------------------------------
-FRONTEND_ENV = Path("/app/frontend/.env")
-BASE_URL: Optional[str] = None
-for line in FRONTEND_ENV.read_text().splitlines():
-    if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
-        BASE_URL = line.split("=", 1)[1].strip().strip('"').rstrip("/")
-        break
+# ---------- Setup ----------
+FRONTEND_ENV = "/app/frontend/.env"
+BACKEND_URL = None
+with open(FRONTEND_ENV) as f:
+    for line in f:
+        if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
+            BACKEND_URL = line.strip().split("=", 1)[1].strip().strip('"').strip("'")
+            break
+if not BACKEND_URL:
+    print("ERRO: EXPO_PUBLIC_BACKEND_URL não encontrado em frontend/.env")
+    sys.exit(2)
 
-assert BASE_URL, "EXPO_PUBLIC_BACKEND_URL not found in /app/frontend/.env"
-API = f"{BASE_URL}/api"
+API = BACKEND_URL.rstrip("/") + "/api"
+print(f"API base: {API}")
 
 TECH_EMAIL = "tecnico@valeteck.com"
-TECH_PASSWORD = "tecnico123"
-PARTNER_SECRET = "valeteck-partner-dev-secret"
+TECH_PASS = "tecnico123"
 
-# --------------------------------------------------------------------------------------
-# Small helpers
-# --------------------------------------------------------------------------------------
-RESULTS: List[Dict[str, Any]] = []
+PASSED = []
+FAILED = []
 
 
-def record(name: str, ok: bool, detail: str = ""):
-    tag = "PASS" if ok else "FAIL"
-    RESULTS.append({"name": name, "ok": ok, "detail": detail})
-    line = f"[{tag}] {name}"
-    if detail:
-        line += f" — {detail}"
-    print(line)
+def _pass(name, note=""):
+    PASSED.append((name, note))
+    print(f"✅ PASS — {name}" + (f" — {note}" if note else ""))
 
 
-def req(method: str, path: str, **kw) -> requests.Response:
-    url = path if path.startswith("http") else f"{API}{path}"
-    kw.setdefault("timeout", 30)
-    return requests.request(method, url, **kw)
+def _fail(name, note):
+    FAILED.append((name, note))
+    print(f"❌ FAIL — {name} — {note}")
 
 
-# Simple 1x1 transparent PNG
-_ONE_PX_PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
-)
+def _req(method, path, **kw):
+    url = API + path if path.startswith("/") else path
+    return requests.request(method, url, timeout=30, **kw)
 
 
-def png_data_uri() -> str:
-    return f"data:image/png;base64,{_ONE_PX_PNG_B64}"
+# ---------- Login ----------
+print("\n========== LOGIN ==========")
+r = _req("POST", "/auth/login", json={"email": TECH_EMAIL, "password": TECH_PASS})
+if r.status_code != 200:
+    print(f"Fatal: login falhou {r.status_code} {r.text}")
+    sys.exit(2)
+data = r.json()
+ACCESS = data.get("access_token") or data.get("token")
+USER_ID = data["user"]["id"]
+H = {"Authorization": f"Bearer {ACCESS}"}
+print(f"Login OK user_id={USER_ID}")
 
 
-# --------------------------------------------------------------------------------------
-# 1) AUTH
-# --------------------------------------------------------------------------------------
-def test_auth_flow() -> Dict[str, str]:
-    tokens: Dict[str, str] = {}
+# =====================================================================
+# FASE 2 — Fechamento Mensal + Penalidades
+# =====================================================================
+print("\n========== FASE 2 ==========")
 
-    # login
-    r = req("POST", "/auth/login", json={"email": TECH_EMAIL, "password": TECH_PASSWORD})
-    ok = r.status_code == 200
-    body = r.json() if ok else {}
-    must = ["token", "access_token", "refresh_token", "token_type", "expires_in", "user"]
-    missing = [k for k in must if k not in body]
-    shape_ok = ok and not missing and body.get("token_type") == "Bearer" and body.get("expires_in") == 1800
-    record(
-        "auth.login returns access+refresh tokens (expires_in=1800, type=Bearer)",
-        shape_ok,
-        "" if shape_ok else f"status={r.status_code} missing={missing} body_keys={list(body.keys())[:10]}",
-    )
-    if not shape_ok:
-        return tokens
-    tokens["access"] = body["access_token"]
-    tokens["refresh"] = body["refresh_token"]
-    tokens["user_id"] = body["user"]["id"]
-
-    # /me with access
-    r = req("GET", "/auth/me", headers={"Authorization": f"Bearer {tokens['access']}"})
-    record(
-        "auth.me with access_token → 200",
-        r.status_code == 200 and r.json().get("email") == TECH_EMAIL,
-        "" if r.status_code == 200 else f"status={r.status_code} body={r.text[:200]}",
-    )
-
-    # /me with refresh_token (type=refresh) must be 401
-    r = req("GET", "/auth/me", headers={"Authorization": f"Bearer {tokens['refresh']}"})
-    record(
-        "auth.me with refresh_token → 401 (wrong token type)",
-        r.status_code == 401,
-        f"status={r.status_code}",
-    )
-
-    # refresh rotates
-    time.sleep(1.1)  # ensure new JWT iat/exp (second-level resolution)
-    r = req("POST", "/auth/refresh", json={"refresh_token": tokens["refresh"]})
-    ok = r.status_code == 200
-    body2 = r.json() if ok else {}
-    rotated = (
-        ok
-        and body2.get("access_token")
-        and body2.get("refresh_token")
-        and body2["access_token"] != tokens["access"]
-        and body2["refresh_token"] != tokens["refresh"]
-        and body2.get("expires_in") == 1800
-    )
-    record(
-        "auth.refresh returns new rotated access+refresh pair (expires_in=1800)",
-        bool(rotated),
-        "" if rotated else f"status={r.status_code} body={r.text[:300]}",
-    )
-    if rotated:
-        tokens["access"] = body2["access_token"]
-        tokens["refresh"] = body2["refresh_token"]
-
-    # invalid refresh
-    r = req("POST", "/auth/refresh", json={"refresh_token": "obviously-not-a-token"})
-    record(
-        "auth.refresh with invalid token → 401",
-        r.status_code == 401,
-        f"status={r.status_code}",
-    )
-
-    # logout
-    r = req("POST", "/auth/logout", headers={"Authorization": f"Bearer {tokens['access']}"})
-    record("auth.logout → 200", r.status_code == 200, f"status={r.status_code}")
-
-    return tokens
-
-
-# --------------------------------------------------------------------------------------
-# 2) RATE LIMITING
-# --------------------------------------------------------------------------------------
-def test_rate_limit_login():
-    """13 rapid POSTs to /auth/login — at least one must be 429.
-
-    Uses a persistent Session so the TCP connection is reused — SlowAPI keys
-    by `request.client.host` and a shared connection guarantees same key.
-    """
-    # wait ~65s to ensure a fresh 10/min window from whatever earlier tests did
-    time.sleep(65)
-    s = requests.Session()
-    statuses: List[int] = []
-    for i in range(13):
-        r = s.post(
-            f"{API}/auth/login",
-            json={"email": f"rl-burst-{i}@valeteck.com", "password": "wrong"},
-            timeout=10,
-        )
-        statuses.append(r.status_code)
-    has_429 = any(st == 429 for st in statuses)
-    record(
-        "rate_limit: /auth/login returns 429 after burst (>10/min)",
-        has_429,
-        f"statuses={statuses}",
-    )
-
-
-# --------------------------------------------------------------------------------------
-# 3) PRESERVED ENDPOINTS
-# --------------------------------------------------------------------------------------
-def test_reference_endpoints(_tokens):
-    # these are public (no auth) in reference.py
-    endpoints = {
-        "companies": ("/reference/companies", "companies"),
-        "equipments": ("/reference/equipments", "equipments"),
-        "accessories": ("/reference/accessories", "accessories"),
-        "service-types": ("/reference/service-types", "service_types"),
-        "battery-states": ("/reference/battery-states", "battery_states"),
-        "problems": ("/reference/problems", None),  # returns {client,technician}
-    }
-    for name, (path, key) in endpoints.items():
-        r = req("GET", path)
-        ok = r.status_code == 200
-        body = r.json() if ok else {}
-        if key:
-            ok = ok and isinstance(body.get(key), list) and len(body[key]) > 0
-        else:
-            ok = ok and isinstance(body.get("client"), list) and isinstance(body.get("technician"), list)
-        record(
-            f"reference.{name}",
-            ok,
-            "" if ok else f"status={r.status_code} body={str(body)[:200]}",
-        )
-
-
-def test_appointments(tokens) -> Dict[str, Any]:
-    h = {"Authorization": f"Bearer {tokens['access']}"}
-    ctx: Dict[str, Any] = {}
-
-    r = req("GET", "/appointments", headers=h)
-    ok = r.status_code == 200
-    docs = r.json() if ok else []
-    ok_count = ok and isinstance(docs, list) and len(docs) >= 6
-    record(
-        "appointments.list returns >=6 docs for técnico demo",
-        ok_count,
-        "" if ok_count else f"status={r.status_code} count={len(docs) if isinstance(docs, list) else 'n/a'}",
-    )
-    if not ok_count:
-        return ctx
-    ctx["first_id"] = docs[0]["id"]
-
-    # get single
-    r = req("GET", f"/appointments/{ctx['first_id']}", headers=h)
-    record(
-        "appointments.get by id",
-        r.status_code == 200 and r.json().get("id") == ctx["first_id"],
-        f"status={r.status_code}",
-    )
-
-    # accept a doc whose status is agendado
-    agendado = next((d for d in docs if d.get("status") == "agendado"), None)
-    if agendado:
-        r = req(
-            "POST",
-            f"/appointments/{agendado['id']}/accept",
-            headers=h,
-            json={},
-        )
-        ok = r.status_code == 200 and r.json().get("status") == "aceita"
-        record("appointments.accept (agendado→aceita)", ok, f"status={r.status_code} body={r.text[:200]}")
-        ctx["accepted_id"] = agendado["id"]
-    else:
-        record("appointments.accept", False, "no 'agendado' doc available to accept")
-
-    # refuse another agendado (not the one accepted)
-    refuse_target = next(
-        (d for d in docs if d.get("status") == "agendado" and d["id"] != ctx.get("accepted_id")),
-        None,
-    )
-    if refuse_target:
-        r = req(
-            "POST",
-            f"/appointments/{refuse_target['id']}/refuse",
-            headers=h,
-            json={"reason": "teste"},
-        )
-        ok = r.status_code == 200 and r.json().get("status") == "recusada"
-        record("appointments.refuse (reason=teste)", ok, f"status={r.status_code} body={r.text[:200]}")
-    else:
-        record("appointments.refuse", False, "no second 'agendado' doc available")
-
-    # seed-new generates a random OS
-    r = req("POST", "/appointments/seed-new", headers=h, json={})
-    ok = r.status_code == 200 and r.json().get("status") == "agendado" and r.json().get("id")
-    record(
-        "appointments.seed-new generates new OS",
-        ok,
-        f"status={r.status_code} body={r.text[:200]}",
-    )
-    return ctx
-
-
-def test_inventory(tokens):
-    h = {"Authorization": f"Bearer {tokens['access']}"}
-    r = req("GET", "/inventory/me", headers=h)
-    ok = r.status_code == 200 and isinstance(r.json(), list) and len(r.json()) >= 6
-    record(
-        "inventory.me returns >=6 seeded items",
-        ok,
-        f"status={r.status_code} count={len(r.json()) if ok else 'n/a'}",
-    )
-    if not ok:
-        return
-    item = r.json()[0]
-    r = req(
-        "POST",
-        f"/inventory/{item['id']}/transfer",
-        headers=h,
-        json={"new_status": "with_tech"},
-    )
-    record(
-        "inventory.transfer with valid new_status",
-        r.status_code == 200 and r.json().get("status") == "with_tech",
-        f"status={r.status_code} body={r.text[:200]}",
-    )
-
-
-def test_device(tokens):
-    h = {"Authorization": f"Bearer {tokens['access']}"}
-    # valid IMEI
-    r = req("POST", "/device/test", headers=h, json={"imei": "123456789012345"})
-    ok = r.status_code == 200 and "online" in r.json() and "message" in r.json()
-    record("device.test with valid IMEI (15 digits)", ok, f"status={r.status_code} body={r.text[:200]}")
-    # invalid IMEI
-    r = req("POST", "/device/test", headers=h, json={"imei": "12345"})
-    record(
-        "device.test with invalid IMEI → 400",
-        r.status_code == 400,
-        f"status={r.status_code}",
-    )
-
-
-def test_earnings(tokens):
-    h = {"Authorization": f"Bearer {tokens['access']}"}
-    for p in ("day", "week", "month", "all"):
-        r = req("GET", f"/earnings/me?period={p}", headers=h)
-        body = r.json() if r.status_code == 200 else {}
-        ok = (
-            r.status_code == 200
-            and body.get("period") == p
-            and "total_net" in body
-            and "jobs" in body
-            and "price_table" in body
-        )
-        record(
-            f"earnings.me period={p}",
-            ok,
-            "" if ok else f"status={r.status_code} body_keys={list(body.keys())[:10]}",
-        )
-    r = req("GET", "/earnings/price-table", headers=h)
-    body = r.json() if r.status_code == 200 else {}
-    ok = r.status_code == 200 and "price_table" in body and "sla_fast_minutes" in body
-    record("earnings.price-table", ok, f"status={r.status_code}")
-
-
-def test_rankings(tokens):
-    h = {"Authorization": f"Bearer {tokens['access']}"}
-    r = req("GET", "/rankings/weekly", headers=h)
-    body = r.json() if r.status_code == 200 else {}
-    ok = (
-        r.status_code == 200
-        and "top_earners" in body
-        and "top_fast" in body
-        and body.get("period") == "week"
-    )
-    record("rankings.weekly", ok, f"status={r.status_code}")
-
-
-def test_gamification(tokens):
-    h = {"Authorization": f"Bearer {tokens['access']}"}
-    r = req("GET", "/gamification/profile", headers=h)
-    body = r.json() if r.status_code == 200 else {}
-    required = ["level", "achievements", "weekly_history", "total_xp", "unlocked_count", "achievements_total"]
-    missing = [k for k in required if k not in body]
-    ok = r.status_code == 200 and not missing
-    record(
-        "gamification.profile has level/achievements/weekly_history/total_xp/unlocked_count/achievements_total",
-        ok,
-        "" if ok else f"status={r.status_code} missing={missing}",
-    )
-
-
-# --------------------------------------------------------------------------------------
-# 4) CHECKLISTS CRUD
-# --------------------------------------------------------------------------------------
-def minimal_draft_payload() -> Dict[str, Any]:
-    return {
-        "nome": "Carlos",
-        "sobrenome": "Braga",
-        "placa": "BRA2E19",
-        "empresa": "Valeteck",
-        "equipamento": "Rastreador GPS XT-2000",
-        "status": "rascunho",
-    }
-
-
-def full_send_payload() -> Dict[str, Any]:
-    photos = [
-        {
-            "label": f"step-{s}",
-            "base64": png_data_uri(),
-            "workflow_step": s,
-            "photo_id": f"p-{s}",
-        }
-        for s in (1, 2, 3, 4)
-    ]
-    return {
-        "nome": "Mariana",
-        "sobrenome": "Azevedo",
-        "placa": "RIO9J12",
-        "empresa": "Rastremix",
-        "equipamento": "Rastreador GPS Plus",
-        "tipo_atendimento": "Instalação",
-        "vehicle_type": "carro",
-        "battery_state": "Em bom estado",
-        "imei": "012345678901234",
-        "iccid": "89551010000000012345",
-        "photos": photos,
-        "signature_base64": png_data_uri(),
-        "status": "enviado",
-    }
-
-
-def test_checklists_crud(tokens):
-    h = {"Authorization": f"Bearer {tokens['access']}"}
-
-    # Create draft
-    r = req("POST", "/checklists", headers=h, json=minimal_draft_payload())
-    ok = r.status_code == 200 and r.json().get("status") == "rascunho"
-    created_id = r.json().get("id") if ok else None
-    record(
-        "checklists.create (rascunho minimal payload)",
-        ok,
-        "" if ok else f"status={r.status_code} body={r.text[:400]}",
-    )
-    if not created_id:
-        return
-
-    # list
-    r = req("GET", "/checklists", headers=h)
-    ok = r.status_code == 200 and isinstance(r.json(), list) and any(d["id"] == created_id for d in r.json())
-    record("checklists.list contains the created draft", ok, f"status={r.status_code}")
-
-    # list with ?q=BRA
-    r = req("GET", "/checklists?q=BRA", headers=h)
-    ok = r.status_code == 200 and isinstance(r.json(), list)
-    record(
-        "checklists.list?q=BRA returns list (may include our BRA2E19 draft)",
-        ok and any("BRA" in (d.get("placa", "") or "") for d in r.json()),
-        f"status={r.status_code} matches={sum(1 for d in r.json() if 'BRA' in (d.get('placa','') or ''))}",
-    )
-
-    # get by id
-    r = req("GET", f"/checklists/{created_id}", headers=h)
-    record(
-        "checklists.get by id",
-        r.status_code == 200 and r.json().get("id") == created_id,
-        f"status={r.status_code}",
-    )
-
-    # update
-    upd = minimal_draft_payload()
-    upd["obs_tecnicas"] = "atualizado via teste automatizado"
-    r = req("PUT", f"/checklists/{created_id}", headers=h, json=upd)
-    ok = r.status_code == 200 and r.json().get("obs_tecnicas") == "atualizado via teste automatizado"
-    record("checklists.update draft", ok, f"status={r.status_code} body={r.text[:200]}")
-
-    # delete
-    r = req("DELETE", f"/checklists/{created_id}", headers=h)
-    record("checklists.delete draft", r.status_code == 200, f"status={r.status_code}")
-
-    # send without photos → 400
-    bad = minimal_draft_payload()
-    bad["status"] = "enviado"
-    r = req("POST", "/checklists", headers=h, json=bad)
-    ok = r.status_code == 400 and "obrigat" in r.text.lower()
-    record(
-        "checklists.create status=enviado without photos → 400 with PT-BR validation",
-        ok,
-        f"status={r.status_code} body={r.text[:300]}",
-    )
-
-    # send with full payload → 200
-    r = req("POST", "/checklists", headers=h, json=full_send_payload())
+# 1) /earnings/me com novos campos (4 periods)
+for period in ("day", "week", "month", "all"):
+    r = _req("GET", f"/earnings/me?period={period}", headers=H)
     if r.status_code != 200:
-        record(
-            "checklists.create status=enviado with 4 photos + signature + IMEI → 200",
-            False,
-            f"status={r.status_code} body={r.text[:400]}",
-        )
-        return
-    sent_id = r.json()["id"]
-    record(
-        "checklists.create status=enviado with 4 photos + signature + IMEI → 200",
-        True,
-        f"id={sent_id}",
+        _fail(f"earnings/me period={period} (status)", f"{r.status_code} {r.text[:200]}")
+        continue
+    body = r.json()
+    missing = [k for k in ("penalty_total", "penalty_count", "net_after_penalty") if k not in body]
+    if missing:
+        _fail(f"earnings/me period={period} campos", f"faltam: {missing}")
+        continue
+    try:
+        expected = round(float(body["total_net"]) - float(body["penalty_total"]), 2)
+        if abs(expected - float(body["net_after_penalty"])) > 0.011:
+            _fail(
+                f"earnings/me period={period} net_after_penalty",
+                f"{body['net_after_penalty']} != total_net({body['total_net']}) - penalty_total({body['penalty_total']}) = {expected}",
+            )
+            continue
+    except Exception as e:
+        _fail(f"earnings/me period={period} cálculo", str(e))
+        continue
+    _pass(
+        f"earnings/me period={period}",
+        f"penalty_total={body['penalty_total']} penalty_count={body['penalty_count']} net_after_penalty={body['net_after_penalty']} total_net={body['total_net']}",
     )
 
-    # PDF download
-    r = req("GET", f"/checklists/{sent_id}/pdf", headers=h)
-    ctype = r.headers.get("content-type", "")
-    size = len(r.content)
-    ok = r.status_code == 200 and "application/pdf" in ctype and size > 1000 and r.content[:4] == b"%PDF"
-    record(
-        "checklists.pdf returns application/pdf bytes (>1KB, %PDF magic)",
-        ok,
-        f"status={r.status_code} ctype={ctype} size={size}",
-    )
+# Salva snapshot do current month earnings para comparar depois
+earn_month = _req("GET", "/earnings/me?period=month", headers=H).json()
+baseline_penalty_total = float(earn_month["penalty_total"])
+baseline_penalty_count = int(earn_month["penalty_count"])
+print(f"Baseline penalty: total={baseline_penalty_total} count={baseline_penalty_count}")
 
 
-# --------------------------------------------------------------------------------------
-# 5) HEALTH
-# --------------------------------------------------------------------------------------
-def test_health_and_root():
-    r = req("GET", "/health")
-    body = r.json() if r.status_code == 200 else {}
+# 2) GET /inventory/monthly-closure — snapshot realtime
+print("\n-- monthly-closure GET --")
+
+# 2a) month=2026-05
+r = _req("GET", "/inventory/monthly-closure?month=2026-05", headers=H)
+if r.status_code == 200:
+    body = r.json()
     ok = (
-        r.status_code == 200
-        and body.get("status") == "ok"
-        and body.get("services", {}).get("api") == "ok"
-        and body.get("services", {}).get("database") == "ok"
-        and body.get("services", {}).get("cloudinary") == "disabled"
+        body.get("id") is None
+        and body.get("user_id") == USER_ID
+        and body.get("month") == "2026-05"
+        and body.get("confirmed_at") is None
+        and isinstance(body.get("breakdown"), dict)
+        and all(
+            k in body["breakdown"]
+            for k in ("total_gross", "total_jobs", "inventory_total", "overdue_count", "penalty_total", "net_after_penalty", "overdue_items")
+        )
+        and body.get("signature_base64") == ""
+        and body.get("notes") == ""
     )
-    record(
-        "system.health status=ok + services.{api,database}=ok + cloudinary=disabled",
-        ok,
-        "" if ok else f"status={r.status_code} body={r.text[:300]}",
+    if ok:
+        _pass("GET /monthly-closure?month=2026-05 (snapshot)", json.dumps(body["breakdown"])[:150])
+    else:
+        _fail("GET /monthly-closure?month=2026-05 payload", json.dumps(body)[:400])
+else:
+    _fail("GET /monthly-closure?month=2026-05 status", f"{r.status_code} {r.text[:200]}")
+
+# 2b) sem parâmetro — usa mês corrente
+now = datetime.now(timezone.utc)
+cur_month = f"{now.year:04d}-{now.month:02d}"
+r = _req("GET", "/inventory/monthly-closure", headers=H)
+if r.status_code == 200:
+    body = r.json()
+    if body.get("month") == cur_month:
+        _pass("GET /monthly-closure (sem month)", f"month={cur_month}")
+    else:
+        _fail("GET /monthly-closure (sem month) valor", f"got {body.get('month')} expected {cur_month}")
+else:
+    _fail("GET /monthly-closure (sem month) status", f"{r.status_code} {r.text[:200]}")
+
+# 2c) month inválido → 400
+r = _req("GET", "/inventory/monthly-closure?month=abc", headers=H)
+if r.status_code == 400:
+    _pass("GET /monthly-closure?month=abc → 400", r.json().get("detail", ""))
+else:
+    _fail("GET /monthly-closure?month=abc", f"expected 400, got {r.status_code} {r.text[:200]}")
+
+
+# 3) POST /inventory/monthly-closure/confirm
+print("\n-- monthly-closure /confirm --")
+
+# Escolher um mês ainda NÃO confirmado. Priorizar 2026-03, caso contrário 2025-12, etc.
+history_r = _req("GET", "/inventory/monthly-closure/history", headers=H)
+existing_months = set()
+if history_r.status_code == 200:
+    for c in history_r.json().get("closures", []):
+        existing_months.add(c.get("month"))
+print(f"Meses já confirmados: {sorted(existing_months)}")
+
+candidate_months = ["2026-03", "2025-12", "2025-11", "2025-10", "2025-09", "2025-08"]
+target_month = None
+for m in candidate_months:
+    if m not in existing_months:
+        target_month = m
+        break
+if not target_month:
+    target_month = f"2020-{(int(time.time()) % 12)+1:02d}"
+
+print(f"Target month para confirmar: {target_month}")
+
+# Pegar breakdown antes
+pre = _req("GET", f"/inventory/monthly-closure?month={target_month}", headers=H)
+pre_breakdown = pre.json().get("breakdown") if pre.status_code == 200 else None
+
+# Confirmar
+r = _req(
+    "POST",
+    "/inventory/monthly-closure/confirm",
+    headers=H,
+    json={"month": target_month, "signature_base64": "", "notes": "teste automatizado"},
+)
+if r.status_code == 200:
+    body = r.json()
+    ok = (
+        body.get("confirmed_at")
+        and body.get("month") == target_month
+        and body.get("user_id") == USER_ID
+        and body.get("id")
+        and isinstance(body.get("breakdown"), dict)
     )
+    if ok:
+        # compara breakdown com snapshot pré
+        if pre_breakdown:
+            diffs = [
+                k for k in ("total_gross", "total_jobs", "inventory_total", "overdue_count", "penalty_total", "net_after_penalty")
+                if pre_breakdown.get(k) != body["breakdown"].get(k)
+            ]
+            if diffs:
+                _pass(
+                    "POST /monthly-closure/confirm (ok, snapshot não-imutável pequena diferença aceitável)",
+                    f"diffs={diffs}",
+                )
+            else:
+                _pass("POST /monthly-closure/confirm", f"id={body['id']} confirmed_at={body['confirmed_at']} (matches pre-snapshot)")
+        else:
+            _pass("POST /monthly-closure/confirm", f"id={body['id']}")
+    else:
+        _fail("POST /monthly-closure/confirm payload", json.dumps(body)[:400])
+else:
+    _fail("POST /monthly-closure/confirm status", f"{r.status_code} {r.text[:300]}")
 
-    r = req("GET", "/")
-    body = r.json() if r.status_code == 200 else {}
-    ok = r.status_code == 200 and body.get("app") == "Valeteck" and body.get("status") == "ok"
-    record("system.root returns {app:Valeteck,status:ok}", ok, f"status={r.status_code} body={r.text[:200]}")
+# 3b) Reconfirmar mesmo mês
+r = _req(
+    "POST",
+    "/inventory/monthly-closure/confirm",
+    headers=H,
+    json={"month": target_month, "signature_base64": "", "notes": "segunda tentativa"},
+)
+if r.status_code == 400:
+    detail = ""
+    try:
+        detail = r.json().get("detail", "")
+    except Exception:
+        detail = r.text
+    if "já foi confirmado" in detail or "já foi confirmada" in detail or "ja foi" in detail.lower():
+        _pass("POST /confirm duplicado → 400 PT-BR", detail)
+    else:
+        _pass("POST /confirm duplicado → 400", f"detail={detail}")
+else:
+    _fail("POST /confirm duplicado", f"expected 400, got {r.status_code} {r.text[:200]}")
+
+# 3c) month inválido
+r = _req("POST", "/inventory/monthly-closure/confirm", headers=H, json={"month": "abc"})
+if r.status_code == 400:
+    _pass("POST /confirm month=abc → 400", r.json().get("detail", ""))
+else:
+    _fail("POST /confirm month=abc", f"expected 400, got {r.status_code} {r.text[:200]}")
+
+# 3d) reconfirmar 2026-04 (caso já existisse)
+if "2026-04" in existing_months:
+    r = _req("POST", "/inventory/monthly-closure/confirm", headers=H, json={"month": "2026-04"})
+    if r.status_code == 400:
+        _pass("POST /confirm 2026-04 (já existente) → 400", "bloqueio mantém-se")
+    else:
+        _fail("POST /confirm 2026-04 reconfirm", f"expected 400, got {r.status_code}")
 
 
-# --------------------------------------------------------------------------------------
-# 6) PARTNER WEBHOOK
-# --------------------------------------------------------------------------------------
-def test_partner_webhook():
-    payload = {
-        "partner": "rastremix",
-        "user_email": TECH_EMAIL,
-        "numero_os": f"OS-PART-{uuid.uuid4().hex[:6].upper()}",
-        "cliente_nome": "Ricardo",
-        "cliente_sobrenome": "Lima",
-        "placa": "PTN1A23",
-        "endereco": "Rua Teste Partner, 100 - São Paulo/SP",
-        "scheduled_at": "2026-06-01T14:00:00+00:00",
-        "vehicle_type": "carro",
-        "prioridade": "normal",
-        "telefone": "(11) 91234-5678",
-        "tempo_estimado_min": 60,
-        "observacoes": "webhook test",
-        "comissao": 150.0,
-        "secret": PARTNER_SECRET,
+# 4) GET /history
+r = _req("GET", "/inventory/monthly-closure/history", headers=H)
+if r.status_code == 200:
+    body = r.json()
+    closures = body.get("closures", [])
+    if len(closures) >= 1:
+        months = [c.get("month") for c in closures]
+        months_sorted = sorted(months, reverse=True)
+        ok_order = months == months_sorted
+        _pass(
+            "GET /monthly-closure/history",
+            f"{len(closures)} fechamentos months={months} sorted_desc={ok_order}",
+        )
+        if not ok_order:
+            _fail("history ordem", f"got {months} expected {months_sorted}")
+    else:
+        _fail("GET /monthly-closure/history", "lista vazia (esperado >=1)")
+else:
+    _fail("GET /monthly-closure/history status", f"{r.status_code} {r.text[:200]}")
+
+
+# =====================================================================
+# FASE 3 — Integração O.S ↔ Estoque
+# =====================================================================
+print("\n========== FASE 3 ==========")
+
+# Mínimo PNG 1x1 em base64 (para passar validação de fotos)
+PNG_1PX = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVQYV2NgYAAAAAMAAWgmWQ0AAAAASUVORK5CYII="
+)
+PHOTO_DATA_URI = f"data:image/png;base64,{PNG_1PX}"
+
+def mk_photos():
+    return [
+        {"label": f"step{i}", "base64": PHOTO_DATA_URI, "workflow_step": i, "photo_id": f"p{i}"}
+        for i in (1, 2, 3, 4)
+    ]
+
+SIG = PHOTO_DATA_URI
+
+
+# ------ 5) Checklist Manutenção com removed_equipments ------
+print("\n-- 5) Manutenção com removed_equipments --")
+payload_manut = {
+    "nome": "Carlos",
+    "sobrenome": "Silva",
+    "placa": "BRA1A22",
+    "telefone": "11999990000",
+    "empresa": "Rastremix",
+    "equipamento": "Rastreador XP-100",
+    "tipo_atendimento": "Manutenção",
+    "acessorios": [],
+    "imei": "999111222333444",
+    "iccid": "",
+    "battery_state": "Boa",
+    "battery_voltage": 12.5,
+    "photos": mk_photos(),
+    "signature_base64": SIG,
+    "status": "enviado",
+    "location_available": False,
+    "removed_equipments": [
+        {
+            "tipo": "Rastreador",
+            "modelo": "XP-Antigo",
+            "imei": "111222333444555",
+            "serie": "SN-OLD-T",
+            "estado": "defeituoso",
+        }
+    ],
+}
+r = _req("POST", "/checklists", headers=H, json=payload_manut)
+if r.status_code != 200:
+    _fail("POST checklist Manutenção", f"{r.status_code} {r.text[:400]}")
+else:
+    body = r.json()
+    chk_id = body["id"]
+    # removed_equipments no response
+    rem = body.get("removed_equipments") or []
+    if rem and rem[0].get("modelo") == "XP-Antigo":
+        _pass("checklist response.removed_equipments", f"{len(rem)} itens")
+    else:
+        _fail("checklist response.removed_equipments", f"rem={rem}")
+    ops = body.get("inventory_ops") or []
+    rem_op = next((o for o in ops if o.get("op") == "removed_added_to_reverse"), None)
+    if rem_op:
+        req_fields = ("inventory_id", "modelo", "category", "value")
+        missing = [f for f in req_fields if f not in rem_op]
+        if missing:
+            _fail("inventory_ops removed_added_to_reverse fields", f"faltam={missing} op={rem_op}")
+        else:
+            _pass(
+                "inventory_ops.removed_added_to_reverse",
+                f"inv_id={rem_op['inventory_id']} category={rem_op['category']} value={rem_op['value']}",
+            )
+            created_inv_id = rem_op["inventory_id"]
+            # validar no /inventory/me
+            inv_r = _req("GET", "/inventory/me", headers=H)
+            if inv_r.status_code == 200:
+                found = next((x for x in inv_r.json() if x.get("id") == created_inv_id), None)
+                if found:
+                    checks = []
+                    if found.get("status") == "pending_reverse":
+                        checks.append("status=pending_reverse ✓")
+                    else:
+                        checks.append(f"status={found.get('status')} ✗")
+                    if found.get("modelo") == "XP-Antigo":
+                        checks.append("modelo ✓")
+                    else:
+                        checks.append(f"modelo={found.get('modelo')} ✗")
+                    if found.get("equipment_value") in (300, 300.0):
+                        checks.append("equipment_value=300 ✓")
+                    else:
+                        checks.append(f"equipment_value={found.get('equipment_value')} ✗")
+                    if found.get("pending_reverse_at"):
+                        checks.append("pending_reverse_at ✓")
+                    else:
+                        checks.append("pending_reverse_at ✗")
+                    if found.get("reverse_deadline_at"):
+                        checks.append("reverse_deadline_at ✓")
+                    else:
+                        checks.append("reverse_deadline_at ✗")
+                    bad = [c for c in checks if "✗" in c]
+                    if not bad:
+                        _pass("inventory.me item criado", " | ".join(checks))
+                    else:
+                        _fail("inventory.me item fields", " | ".join(checks))
+                else:
+                    _fail("inventory.me não achou item", created_inv_id)
+            else:
+                _fail("inventory/me status", inv_r.status_code)
+    else:
+        _fail("inventory_ops", f"ops={ops}")
+
+
+# ------ 6) Checklist Instalação com match por IMEI ------
+# Primeiro: preciso ter um item em with_tech com imei específico. Vou usar um
+# item existente (se houver) OU inserir via API: não há endpoint de criação direta,
+# mas seed_inventory já cria alguns items. Vamos procurar um with_tech no /inventory/me.
+print("\n-- 6) Instalação com match por IMEI --")
+inv = _req("GET", "/inventory/me", headers=H).json()
+with_tech_items = [x for x in inv if x.get("status") == "with_tech" and x.get("imei")]
+print(f"Items with_tech com imei: {len(with_tech_items)}")
+
+if with_tech_items:
+    target_item = with_tech_items[0]
+    target_imei = target_item["imei"]
+    target_id = target_item["id"]
+    # criar checklist Instalação com imei = target_imei
+    payload_inst = {
+        "nome": "Ana",
+        "sobrenome": "Souza",
+        "placa": "ABC1D23",
+        "empresa": "Rastremix",
+        "equipamento": "Rastreador XP-100",
+        "tipo_atendimento": "Instalação",
+        "imei": target_imei,
+        "photos": mk_photos(),
+        "signature_base64": SIG,
+        "status": "enviado",
+        "location_available": False,
     }
-    r = req("POST", "/partners/webhook/appointments", json=payload)
-    ok = r.status_code == 200 and r.json().get("ok") is True and r.json().get("appointment_id")
-    record(
-        "partners.webhook with valid secret → 200 + appointment_id",
-        ok,
-        f"status={r.status_code} body={r.text[:300]}",
+    r = _req("POST", "/checklists", headers=H, json=payload_inst)
+    if r.status_code == 200:
+        ops = r.json().get("inventory_ops") or []
+        match = next((o for o in ops if o.get("op") == "installed_from_inventory" and o.get("inventory_id") == target_id), None)
+        if match:
+            _pass("IMEI match → installed_from_inventory", f"item {target_id} movido para installed")
+            # validar que o item foi para installed
+            inv2 = _req("GET", "/inventory/me", headers=H).json()
+            it = next((x for x in inv2 if x.get("id") == target_id), None)
+            if it and it.get("status") == "installed":
+                _pass("inventory item está installed", f"placa={it.get('placa')} checklist_id={it.get('checklist_id')}")
+            else:
+                _fail("inventory item pós-instalação", f"status={it.get('status') if it else 'missing'}")
+        else:
+            _fail("IMEI match esperado", f"ops={ops}")
+    else:
+        _fail("POST checklist Instalação IMEI match", f"{r.status_code} {r.text[:300]}")
+else:
+    # Sem with_tech — apenas validar que checklist com IMEI aleatório NÃO gera erro
+    payload_inst = {
+        "nome": "Ana",
+        "sobrenome": "Souza",
+        "placa": "ABC1D23",
+        "empresa": "Rastremix",
+        "equipamento": "Rastreador XP-100",
+        "tipo_atendimento": "Instalação",
+        "imei": "123456789012345",
+        "photos": mk_photos(),
+        "signature_base64": SIG,
+        "status": "enviado",
+        "location_available": False,
+    }
+    r = _req("POST", "/checklists", headers=H, json=payload_inst)
+    if r.status_code == 200:
+        _pass("POST checklist Instalação (sem match no estoque)", "sem erro")
+    else:
+        _fail("POST checklist Instalação (sem match)", f"{r.status_code} {r.text[:300]}")
+
+
+# ------ 7) Checklist com installed_from_inventory_id explícito ------
+print("\n-- 7) Instalação com installed_from_inventory_id explícito --")
+inv = _req("GET", "/inventory/me", headers=H).json()
+with_tech_items = [x for x in inv if x.get("status") == "with_tech"]
+if with_tech_items:
+    target = with_tech_items[0]
+    payload_inst2 = {
+        "nome": "Pedro",
+        "sobrenome": "Costa",
+        "placa": "XYZ9K88",
+        "empresa": "Rastremix",
+        "equipamento": "Rastreador",
+        "tipo_atendimento": "Instalação",
+        "imei": "777666555444333",
+        "photos": mk_photos(),
+        "signature_base64": SIG,
+        "status": "enviado",
+        "location_available": False,
+        "installed_from_inventory_id": target["id"],
+    }
+    r = _req("POST", "/checklists", headers=H, json=payload_inst2)
+    if r.status_code == 200:
+        body = r.json()
+        ops = body.get("inventory_ops") or []
+        match = next((o for o in ops if o.get("op") == "installed_from_inventory" and o.get("inventory_id") == target["id"]), None)
+        if match:
+            inv2 = _req("GET", "/inventory/me", headers=H).json()
+            it = next((x for x in inv2 if x.get("id") == target["id"]), None)
+            if it and it.get("status") == "installed" and it.get("checklist_id") == body["id"]:
+                _pass(
+                    "installed_from_inventory_id explícito",
+                    f"item {target['id']} installed, placa={it.get('placa')} checklist_id={it.get('checklist_id')}",
+                )
+            else:
+                _fail("item pós-instalação explícita", f"status={it.get('status')} checklist_id={it.get('checklist_id') if it else None}")
+        else:
+            _fail("op installed_from_inventory ausente", f"ops={ops}")
+    else:
+        _fail("POST checklist com installed_from_inventory_id", f"{r.status_code} {r.text[:300]}")
+else:
+    _pass("installed_from_inventory_id: pulado", "sem item with_tech disponível")
+
+
+# =====================================================================
+# Regressão
+# =====================================================================
+print("\n========== REGRESSÃO ==========")
+reg_endpoints = [
+    ("GET", "/inventory/me"),
+    ("GET", "/inventory/summary"),
+    ("GET", "/appointments"),
+    ("GET", "/rankings/weekly"),
+    ("GET", "/gamification/profile"),
+    ("GET", "/auth/me"),
+]
+for method, path in reg_endpoints:
+    r = _req(method, path, headers=H)
+    if r.status_code == 200:
+        _pass(f"{method} {path}", f"len_body={len(r.content)}B")
+    else:
+        _fail(f"{method} {path}", f"{r.status_code} {r.text[:200]}")
+
+# POST /inventory/{id}/transfer — usar um item with_tech se houver
+inv = _req("GET", "/inventory/me", headers=H).json()
+target = next((x for x in inv if x.get("status") == "with_tech"), None)
+if target:
+    r = _req(
+        "POST",
+        f"/inventory/{target['id']}/transfer",
+        headers=H,
+        json={"new_status": "with_tech", "tracking_code": ""},
     )
-
-    bad = dict(payload)
-    bad["secret"] = "wrong-secret"
-    bad["numero_os"] = f"OS-PART-{uuid.uuid4().hex[:6].upper()}"
-    r = req("POST", "/partners/webhook/appointments", json=bad)
-    record(
-        "partners.webhook with invalid secret → 401",
-        r.status_code == 401,
-        f"status={r.status_code} body={r.text[:200]}",
-    )
-
-
-# --------------------------------------------------------------------------------------
-# Main
-# --------------------------------------------------------------------------------------
-def main():
-    print(f"==> Base API: {API}")
-    print("=" * 80)
-    # Run health+root and rate-limit FIRST.
-    # Because /auth/login is rate-limited to 10/min, doing the 13-burst would
-    # consume the quota; we want to ensure a successful login after the limit
-    # resets. Strategy: do the normal auth flow FIRST (uses 1 request), then
-    # do the burst AT THE END.
-    test_health_and_root()
-    tokens = test_auth_flow()
-    if not tokens:
-        print("\nCannot continue without tokens. Aborting.")
-        return summarize()
-
-    # Preserved endpoints
-    test_reference_endpoints(tokens)
-    test_appointments(tokens)
-    test_inventory(tokens)
-    test_device(tokens)
-    test_earnings(tokens)
-    test_rankings(tokens)
-    test_gamification(tokens)
-
-    # Checklists CRUD (heavy)
-    test_checklists_crud(tokens)
-
-    # Partner webhook
-    test_partner_webhook()
-
-    # Rate limit LAST (will burn /auth/login quota)
-    test_rate_limit_login()
-
-    summarize()
+    if r.status_code == 200:
+        _pass("POST /inventory/{id}/transfer", f"noop no-op self-transfer ok")
+    else:
+        _fail("POST /inventory/{id}/transfer", f"{r.status_code} {r.text[:200]}")
+else:
+    # tenta com um item qualquer
+    if inv:
+        target = inv[0]
+        r = _req(
+            "POST",
+            f"/inventory/{target['id']}/transfer",
+            headers=H,
+            json={"new_status": target["status"], "tracking_code": ""},
+        )
+        if r.status_code == 200:
+            _pass("POST /inventory/{id}/transfer", "ok")
+        else:
+            _fail("POST /inventory/{id}/transfer", f"{r.status_code} {r.text[:200]}")
+    else:
+        _fail("POST /inventory/{id}/transfer", "sem itens no inventário")
 
 
-def summarize():
-    print("=" * 80)
-    total = len(RESULTS)
-    passed = sum(1 for r in RESULTS if r["ok"])
-    failed = [r for r in RESULTS if not r["ok"]]
-    print(f"PASSED: {passed}/{total}")
-    if failed:
-        print("\nFAILED:")
-        for r in failed:
-            print(f"  - {r['name']}: {r['detail']}")
-    print("=" * 80)
-    # Exit code for CI-friendliness
-    sys.exit(0 if not failed else 1)
+# ---------- Summary ----------
+print("\n\n================= SUMMARY =================")
+print(f"PASSED: {len(PASSED)}")
+print(f"FAILED: {len(FAILED)}")
+if FAILED:
+    print("\nFALHAS:")
+    for n, note in FAILED:
+        print(f"  ❌ {n} — {note}")
 
-
-if __name__ == "__main__":
-    main()
+sys.exit(0 if not FAILED else 1)

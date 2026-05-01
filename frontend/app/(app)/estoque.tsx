@@ -144,9 +144,14 @@ export default function Estoque() {
       <View style={styles.header}>
         <TouchableOpacity testID="estoque-back" onPress={() => router.back()}><Ionicons name="arrow-back" size={26} color={colors.text} /></TouchableOpacity>
         <Text style={styles.title}>Meu Estoque</Text>
-        <TouchableOpacity testID="estoque-refresh" onPress={() => { setRefreshing(true); load(); }}>
-          <Ionicons name="refresh" size={22} color={colors.text} />
-        </TouchableOpacity>
+        <View style={{ flexDirection: "row", gap: 12 }}>
+          <TouchableOpacity testID="goto-fechamento" onPress={() => router.push("/estoque/fechamento")}>
+            <Ionicons name="calendar-outline" size={22} color={colors.text} />
+          </TouchableOpacity>
+          <TouchableOpacity testID="estoque-refresh" onPress={() => { setRefreshing(true); load(); }}>
+            <Ionicons name="refresh" size={22} color={colors.text} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {loading ? (
