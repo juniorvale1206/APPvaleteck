@@ -1027,8 +1027,12 @@ async def test_device(payload: DeviceTestIn, user=Depends(get_current_user)):
     if not imei or not imei.isdigit() or len(imei) != 15:
         raise HTTPException(status_code=400, detail="IMEI inválido (15 dígitos)")
 
-    # Tenta descobrir a empresa associada ao IMEI via último checklist
-    last = await db.checklists.find_one({"imei": imei}, {"_id": 0, "empresa": 1})
+    # Tenta descobrir a empresa associada ao IMEI via último checklist (mais recente primeiro)
+    last = await db.checklists.find_one(
+        {"imei": imei},
+        {"_id": 0, "empresa": 1},
+        sort=[("created_at", -1)],
+    )
     adapter = get_partner_adapter((last or {}).get("empresa", "")) if last else None
     if adapter is not None:
         result = await adapter.test_device(imei)

@@ -60,7 +60,7 @@ export default function Profile() {
           <Btn testID="logout-btn" title="Sair" icon="log-out-outline" variant="danger" onPress={onLogout} />
         </View>
 
-        <Text style={styles.versionInfo}>Valeteck • v8 — Offline-first</Text>
+        <Text style={styles.versionInfo}>Valeteck • v9 — OCR de placa + integração parceiros</Text>
       </ScrollView>
     </SafeAreaView>
   );
