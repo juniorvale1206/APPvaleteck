@@ -51,10 +51,13 @@ async def my_earnings(period: str = "month", user=Depends(get_current_user)):
         base = base_price(empresa, tipo)
         elapsed = int(d.get("execution_elapsed_sec") or 0)
         bonus = sla_bonus(base, elapsed)
-        net = round(base + bonus, 2)
+        # Bônus de validação (R$ 5 pós-aprovação se valido)
+        val_bonus = float(d.get("validation_bonus") or 0)
+        total_bonus_piece = bonus + val_bonus
+        net = round(base + total_bonus_piece, 2)
         fast = elapsed > 0 and elapsed < SLA_FAST_SEC
         total_base += base
-        total_bonus += bonus
+        total_bonus += total_bonus_piece
         total_elapsed += elapsed
         if fast:
             fast_count += 1
@@ -69,7 +72,7 @@ async def my_earnings(period: str = "month", user=Depends(get_current_user)):
             sobrenome=d.get("sobrenome", ""),
             placa=d.get("placa", ""),
             base_amount=round(base, 2),
-            bonus_amount=round(bonus, 2),
+            bonus_amount=round(total_bonus_piece, 2),
             total_amount=net,
             elapsed_sec=elapsed,
             elapsed_min=elapsed // 60,

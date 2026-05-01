@@ -376,10 +376,85 @@ frontend:
             Conclusão: Integração O.S ↔ Estoque funcionando ponta-a-ponta.
             25 assertions — 0 falhas.
 
+backend:
+  - task: "v13 - Motor de Regras Pós-Aprovação (approve/reject + bônus + duplicidade 30d)"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/admin.py + /app/backend/services/rules.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            ==================== v13 MOTOR DE REGRAS — FULL PASS ====================
+            Suite: /app/backend_test.py contra
+            https://installer-track-1.preview.emergentagent.com/api
+            Resultado: 35/35 assertions PASS, 0 falhas.
+
+            1) ADMIN ENDPOINTS:
+               - GET /admin/pending-approvals (admin) → 200 com {pending:[18 items], count:18};
+                 cada item enriquecido com technician_name/technician_email ✓
+               - Mesma rota com token de técnico → 403 ✓
+
+            2) APROVAÇÃO (checklist válido):
+               - POST /admin/checklists/{id}/approve → 200 com validation_status="valido",
+                 validation_bonus=5.0, duplicate_of=null, message="Checklist validado.
+                 Bônus de R$ 5.00 creditado." ✓
+               - GET /checklists/{id} confirma: status="aprovado", approved_at preenchido,
+                 approved_by_id = admin.id (15e5464a...) ✓
+               - Re-aprovar mesmo checklist → 400 "Checklist já processado (status atual: aprovado)" ✓
+
+            3) DUPLICIDADE (30d, cross-technician global):
+               - Criado novo checklist com a mesma placa aprovada no passo 2 (ABC1D23).
+               - POST approve → validation_status="duplicidade_garantia", validation_bonus=0.0,
+                 duplicate_of = id original (a37c37cf) ✓
+
+            4) REJEIÇÃO:
+               - POST /admin/checklists/{id}/reject sem reason → 400
+                 "Motivo da recusa é obrigatório" ✓
+               - Com {reason:"foto ruim"} → 200, status=reprovado, rejection_reason="foto ruim" ✓
+               - Re-reject mesmo checklist → 400 "Checklist já processado (status atual: reprovado)" ✓
+               - Reject em checklist já aprovado → 400 "Checklist já processado
+                 (status atual: aprovado)" ✓
+
+            5) META CONFIGURÁVEL:
+               - GET /gamification/meta (técnico) retorna todas as 11 chaves esperadas:
+                 target, achieved, pending, duplicates, progress_pct, remaining, days_left,
+                 per_day_needed, on_track, reached, validation_bonus_earned ✓
+               - POST /admin/users/{id}/meta {monthly_target:100} (admin) → 200,
+                 user.monthly_target=100 ✓
+               - Mesma chamada com técnico → 403 ✓
+               - monthly_target=0 → 400 ✓; monthly_target=5000 (>1000) → 400 ✓
+               - user_id UUID inexistente → 404 ✓
+               - Após update, GET /gamification/meta devolve target=100 ✓
+               - Cleanup: meta restaurada para 60.
+
+            6) EARNINGS COM BÔNUS DE VALIDAÇÃO:
+               - GET /earnings/me?period=month: job do checklist aprovado possui
+                 bonus_amount=5.0 (validation_bonus integrado em bonus_amount do EarningJob
+                 conforme routes/earnings.py) ✓
+               - total_bonus consolidado reflete validação (R$ 81.00 — inclui R$5 da
+                 aprovação nova + bônus SLA pré-existentes) ✓
+
+            7) REGRESSÃO:
+               - GET /admin/inventory/summary, /appointments, /rankings/weekly,
+                 /gamification/profile → todos 200 ✓
+               - GET /health → status:"ok" ✓
+
+            Observações (NÃO bloqueantes):
+            - Brief mencionou GET /api/inventory/summary (rota do técnico). Na v13 essa rota
+              não existe como GET para técnico — existe /api/inventory/me (técnico) e
+              /api/admin/inventory/summary (admin). O teste cobriu /admin/inventory/summary.
+              /api/inventory/me já foi validado em fases anteriores.
+            - Observado: o seed expõe o técnico com monthly_target=80 no baseline; o teste
+              não assume valor fixo e apenas valida estrutura + update funcional.
+
 metadata:
   created_by: "main_agent"
-  version: "2.1"
-  test_sequence: 12
+  version: "2.2"
+  test_sequence: 13
   run_ui: false
 
 test_plan:
@@ -463,6 +538,35 @@ agent_communication:
         Conclusão: refatoração P0+P1 está sólida. Todos os contratos preservados, Refresh Token
         JWT funcionando com rotação, Rate Limit ativo, Cloudinary corretamente em modo fallback
         base64, índices Mongo criados no startup, /health expondo estado. Pronto para avançar.
+
+    - agent: "testing"
+      message: |
+        ==================== v13 MOTOR DE REGRAS PÓS-APROVAÇÃO — FULL PASS ====================
+        Suite /app/backend_test.py — 35/35 PASS, 0 falhas.
+
+        COBERTURA:
+        1) Admin pending-approvals: enriquecimento OK, role-guard (tecnico→403) OK.
+        2) Approve válido: validation_status="valido", validation_bonus=5.0,
+           duplicate_of=null, status=aprovado, approved_at+approved_by_id persistidos.
+           Re-approve → 400 "já processado".
+        3) Duplicidade 30d cross-tech: mesma placa aprovada → duplicidade_garantia,
+           bonus=0.0, duplicate_of aponta para checklist original.
+        4) Reject: sem reason → 400 "Motivo da recusa é obrigatório"; com reason →
+           status=reprovado. Re-reject e reject em aprovado → 400 "já processado".
+        5) Meta: GET /gamification/meta com as 11 chaves; POST /admin/users/{id}/meta
+           admin→200, tecnico→403, 0→400, 5000→400, UUID inexistente→404; update
+           refletido no GET subsequente (target=100).
+        6) Earnings: /earnings/me?period=month contém bonus_amount=5.0 no job do
+           checklist recém-aprovado; total_bonus consolidado inclui o bônus de validação.
+        7) Regressão: /admin/inventory/summary, /appointments, /rankings/weekly,
+           /gamification/profile, /health — todos 200/ok.
+
+        Observação: o brief listou GET /api/inventory/summary (rota de técnico) — na
+        v13 essa rota é /api/inventory/me (técnico) ou /api/admin/inventory/summary
+        (admin). Testamos a versão admin; a do técnico já foi validada em fases
+        anteriores. NÃO é bug.
+
+        Motor de Regras v13 está 100% operacional e pronto para produção.
 
     - agent: "main"
       message: |

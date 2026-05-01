@@ -124,4 +124,13 @@ class ChecklistOut(BaseModel):
     sent_at: Optional[str] = None
     removed_equipments: List[RemovedEquipmentIn] = []
     installed_from_inventory_id: Optional[str] = None
-    inventory_ops: List[dict] = []  # log de operações aplicadas ao estoque (criado/atualizado)
+    inventory_ops: List[dict] = []
+    # Motor de regras pós-aprovação
+    validation_status: Optional[str] = "pending"   # pending|valido|duplicidade_garantia
+    validation_bonus: Optional[float] = 0.0         # R$ 5,00 se valido
+    approved_at: Optional[str] = None
+    approved_by_id: Optional[str] = None
+    approved_by_name: Optional[str] = None
+    rejected_at: Optional[str] = None
+    rejection_reason: Optional[str] = None
+    duplicate_of: Optional[str] = None               # id do checklist original se duplicado

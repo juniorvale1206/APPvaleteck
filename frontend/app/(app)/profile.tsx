@@ -57,7 +57,10 @@ export default function Profile() {
           <MenuRow testID="menu-fechamento" icon="calendar-outline" label="Fechamento mensal" color="#10B981" onPress={() => router.push("/estoque/fechamento")} />
           <MenuRow testID="menu-sync" icon="sync-outline" label="Fila de sincronização" color="#10B981" onPress={() => router.push("/(app)/sync")} />
           {user?.role === "admin" && (
-            <MenuRow testID="menu-admin" icon="shield-checkmark-outline" label="Dashboard Admin" color="#EF4444" onPress={() => router.push("/(app)/admin")} />
+            <>
+              <MenuRow testID="menu-admin" icon="shield-checkmark-outline" label="Dashboard Admin" color="#EF4444" onPress={() => router.push("/(app)/admin")} />
+              <MenuRow testID="menu-approvals" icon="checkmark-done-outline" label="Aprovações pendentes" color="#F59E0B" onPress={() => router.push("/(app)/admin-approvals")} />
+            </>
           )}
         </View>
 

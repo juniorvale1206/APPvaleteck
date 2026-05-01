@@ -4,17 +4,29 @@ Permite ao admin visualizar:
 - Fechamentos de todos os técnicos (por mês)
 - Resumo consolidado de estoque de todos os técnicos
 - Lista de usuários técnicos
+- Aprovar/Reprovar checklists (motor de regras pós-aprovação)
+- Configurar meta mensal por técnico
 """
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from core.database import db
 from core.security import require_admin
 from services.inventory import compute_penalty_total, enrich_reverse_fields
+from services.rules import apply_approval_rules, apply_rejection
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+class ApprovalActionIn(BaseModel):
+    reason: Optional[str] = ""      # obrigatório para reject
+
+
+class SetMetaIn(BaseModel):
+    monthly_target: int
 
 
 @router.get("/technicians")
@@ -129,3 +141,81 @@ async def admin_closures(month: Optional[str] = None, admin=Depends(require_admi
         },
         "results": results,
     }
+
+
+
+@router.get("/pending-approvals")
+async def list_pending_approvals(admin=Depends(require_admin)):
+    """Lista checklists com status `enviado` aguardando aprovação."""
+    cursor = db.checklists.find(
+        {"status": {"$in": ["enviado", "em_auditoria"]}},
+        {"_id": 0, "photos": 0, "signature_base64": 0},
+    ).sort("sent_at", -1)
+    docs = await cursor.to_list(length=300)
+    # Enriquecer com nome do técnico
+    user_ids = list({d["user_id"] for d in docs})
+    users = {u["id"]: u for u in await db.users.find({"id": {"$in": user_ids}}, {"_id": 0}).to_list(length=500)}
+    for d in docs:
+        u = users.get(d["user_id"])
+        d["technician_name"] = u.get("name") if u else "—"
+        d["technician_email"] = u.get("email") if u else ""
+    return {"pending": docs, "count": len(docs)}
+
+
+@router.post("/checklists/{checklist_id}/approve")
+async def approve_checklist(checklist_id: str, admin=Depends(require_admin)):
+    """Aprova e processa um checklist executando o motor de regras.
+
+    Regras aplicadas:
+    1. Duplicidade (30 dias): checa se a placa já foi validada por QUALQUER técnico
+       nos últimos 30 dias. Se sim → duplicidade_garantia (R$ 0,00).
+       Se não → valido (+ R$ 5,00).
+    2. Atualiza contadores para a meta mensal do técnico.
+    """
+    cl = await db.checklists.find_one({"id": checklist_id}, {"_id": 0})
+    if not cl:
+        raise HTTPException(status_code=404, detail="Checklist não encontrado")
+    if cl["status"] not in ("enviado", "em_auditoria"):
+        raise HTTPException(status_code=400, detail=f"Checklist já processado (status atual: {cl['status']})")
+    updated = await apply_approval_rules(checklist_id, admin)
+    return {
+        "ok": True,
+        "checklist": updated,
+        "validation_status": updated.get("validation_status"),
+        "validation_bonus": updated.get("validation_bonus"),
+        "duplicate_of": updated.get("duplicate_of"),
+        "message": (
+            "Duplicidade detectada — checklist marcado como garantia (R$ 0,00)."
+            if updated.get("validation_status") == "duplicidade_garantia"
+            else f"Checklist validado. Bônus de R$ {updated.get('validation_bonus', 0):.2f} creditado."
+        ),
+    }
+
+
+@router.post("/checklists/{checklist_id}/reject")
+async def reject_checklist(checklist_id: str, payload: ApprovalActionIn, admin=Depends(require_admin)):
+    """Reprova um checklist com motivo obrigatório."""
+    cl = await db.checklists.find_one({"id": checklist_id}, {"_id": 0})
+    if not cl:
+        raise HTTPException(status_code=404, detail="Checklist não encontrado")
+    if cl["status"] not in ("enviado", "em_auditoria"):
+        raise HTTPException(status_code=400, detail=f"Checklist já processado (status atual: {cl['status']})")
+    if not (payload.reason or "").strip():
+        raise HTTPException(status_code=400, detail="Motivo da recusa é obrigatório")
+    updated = await apply_rejection(checklist_id, admin, payload.reason.strip())
+    return {"ok": True, "checklist": updated}
+
+
+@router.post("/users/{user_id}/meta")
+async def set_user_monthly_target(user_id: str, payload: SetMetaIn, admin=Depends(require_admin)):
+    """Configura meta mensal customizada de um técnico (default: 60)."""
+    if payload.monthly_target <= 0 or payload.monthly_target > 1000:
+        raise HTTPException(status_code=400, detail="monthly_target deve estar entre 1 e 1000")
+    result = await db.users.update_one(
+        {"id": user_id, "role": "tecnico"},
+        {"$set": {"monthly_target": payload.monthly_target}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Técnico não encontrado")
+    updated = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    return {"ok": True, "user": updated}

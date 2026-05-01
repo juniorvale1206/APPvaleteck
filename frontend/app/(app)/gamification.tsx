@@ -27,6 +27,7 @@ export default function Gamification() {
   const router = useRouter();
   const { showToast } = useNotifications();
   const [p, setP] = useState<Profile | null>(null);
+  const [meta, setMeta] = useState<MetaStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [tab, setTab] = useState<"achievements" | "history">("achievements");
@@ -35,8 +36,12 @@ export default function Gamification() {
   const load = useCallback(async () => {
     setError("");
     try {
-      const { data } = await api.get<Profile>("/gamification/profile");
+      const [{ data }, { data: m }] = await Promise.all([
+        api.get<Profile>("/gamification/profile"),
+        api.get<MetaStatus>("/gamification/meta"),
+      ]);
       setP(data);
+      setMeta(m);
       // Level-up detection
       const last = await AsyncStorage.getItem(LAST_LEVEL_KEY);
       const lastNum = last ? parseInt(last, 10) : 0;
@@ -95,6 +100,48 @@ export default function Gamification() {
             <Text style={[styles.xpToNext, { color: colors.primary, fontWeight: "900" }]}>NÍVEL MÁXIMO ALCANÇADO 👑</Text>
           )}
         </View>
+
+        {/* META MENSAL */}
+        {meta && (
+          <View style={[styles.metaCard, meta.reached ? styles.metaReached : (meta.on_track ? styles.metaOnTrack : styles.metaBehind)]} testID="meta-card">
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <Ionicons
+                name={meta.reached ? "trophy" : (meta.on_track ? "trending-up" : "alert-circle")}
+                size={22}
+                color={meta.reached ? colors.primary : (meta.on_track ? colors.success : colors.warning)}
+              />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.metaTitle}>
+                  {meta.reached ? "🏆 Meta mensal atingida!" : "Meta mensal"}
+                </Text>
+                <Text style={styles.metaSub}>
+                  {meta.reached ? `Parabéns! Você bateu as ${meta.target} OS do mês.` :
+                    `${meta.achieved} de ${meta.target} OS válidas • ${meta.days_left} dia(s) restante(s)`}
+                </Text>
+              </View>
+            </View>
+            <View style={styles.metaProgressBar}>
+              <View style={[
+                styles.metaProgressFill,
+                { width: `${meta.progress_pct * 100}%`, backgroundColor: meta.reached ? colors.primary : (meta.on_track ? colors.success : colors.warning) },
+              ]} />
+            </View>
+            <View style={styles.metaFooter}>
+              {meta.reached ? (
+                <Text style={[styles.metaFooterTxt, { color: colors.primary }]}>💰 Bônus já creditado: R$ {meta.validation_bonus_earned.toFixed(2)}</Text>
+              ) : (
+                <>
+                  <Text style={[styles.metaFooterTxt, { color: colors.textMuted }]}>
+                    Faltam <Text style={{ color: colors.text, fontWeight: "900" }}>{meta.remaining}</Text> • {meta.per_day_needed}/dia
+                  </Text>
+                  {meta.duplicates > 0 && (
+                    <Text style={[styles.metaFooterTxt, { color: colors.danger }]}>{meta.duplicates} duplicata(s)</Text>
+                  )}
+                </>
+              )}
+            </View>
+          </View>
+        )}
 
         {/* Stats summary */}
         <View style={styles.summaryRow}>
@@ -220,4 +267,15 @@ const styles = StyleSheet.create({
   weekStats: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   weekNet: { color: colors.success, fontWeight: "900", fontSize: fonts.size.md },
   weekMeta: { color: colors.textMuted, fontSize: 11, fontWeight: "700" },
+  // Meta mensal card
+  metaCard: { padding: space.md, borderRadius: radii.md, borderWidth: 1, marginBottom: space.md },
+  metaReached: { backgroundColor: "#FFFBE6", borderColor: colors.primary },
+  metaOnTrack: { backgroundColor: "#F0FDF4", borderColor: "#86EFAC" },
+  metaBehind: { backgroundColor: "#FFFBEB", borderColor: "#FCD34D" },
+  metaTitle: { color: colors.text, fontWeight: "900", fontSize: fonts.size.md },
+  metaSub: { color: colors.textMuted, fontSize: fonts.size.xs, marginTop: 2 },
+  metaProgressBar: { height: 10, backgroundColor: "rgba(0,0,0,0.08)", borderRadius: 999, overflow: "hidden", marginVertical: 4 },
+  metaProgressFill: { height: "100%", borderRadius: 999 },
+  metaFooter: { flexDirection: "row", justifyContent: "space-between", marginTop: 6 },
+  metaFooterTxt: { fontSize: fonts.size.xs, fontWeight: "700" },
 });
