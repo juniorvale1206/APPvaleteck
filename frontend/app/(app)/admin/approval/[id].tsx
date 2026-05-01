@@ -5,9 +5,9 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as FileSystem from "expo-file-system";
 import * as Sharing from "expo-sharing";
-import { api, apiErrorMessage, getAccessToken, type Checklist } from "../../../src/api";
-import { useAuth } from "../../../src/auth";
-import { colors, fonts, radii, shadow, space } from "../../../src/theme";
+import { api, apiErrorMessage, getAccessToken, type Checklist } from "../../../../src/api";
+import { useAuth } from "../../../../src/auth";
+import { colors, fonts, radii, shadow, space } from "../../../../src/theme";
 
 function Row({ label, value }: { label: string; value?: string | null }) {
   if (!value) return null;

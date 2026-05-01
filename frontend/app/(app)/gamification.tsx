@@ -22,6 +22,11 @@ type Achievement = {
 };
 type WeeklyBucket = { week_start: string; week_label: string; total_net: number; count: number; fast_count: number; xp: number };
 type Profile = { level: LevelInfo; achievements: Achievement[]; weekly_history: WeeklyBucket[]; total_xp: number; unlocked_count: number; achievements_total: number };
+type MetaStatus = {
+  target: number; achieved: number; pending: number; duplicates: number;
+  progress_pct: number; remaining: number; days_left: number; per_day_needed: number;
+  on_track: boolean; reached: boolean; validation_bonus_earned: number;
+};
 
 export default function Gamification() {
   const router = useRouter();

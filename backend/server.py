@@ -106,6 +106,17 @@ async def on_startup():
     # Filas de sync e dashboards (status + recente)
     await db.appointments.create_index([("user_id", 1), ("status", 1), ("scheduled_at", -1)])
 
+    # --- Novos módulos (v2) ---
+    # Inventory: dashboard do técnico + detecção de atrasos
+    await db.inventory.create_index([("user_id", 1), ("status", 1)])
+    await db.inventory.create_index([("user_id", 1), ("status", 1), ("reverse_deadline_at", 1)])
+    await db.inventory.create_index("serial_number")
+    # Closures: fechamento mensal por técnico/mês
+    await db.closures.create_index([("user_id", 1), ("year", -1), ("month", -1)], unique=True)
+    # Aprovações pendentes (admin) e regras de duplicidade
+    await db.checklists.create_index([("validation_status", 1), ("sent_at", -1)])
+    await db.checklists.create_index([("plate_norm", 1), ("status", 1), ("created_at", -1)])
+
     # Seeds
     await seed_users()
     tech = await db.users.find_one({"email": TECH_EMAIL})

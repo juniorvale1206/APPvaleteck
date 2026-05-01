@@ -464,6 +464,26 @@ test_plan:
   test_priority: "high_first"
 
 agent_communication:
+    - agent: "main"
+      message: |
+        === SESSION 2026-05-01 — Continuação do Motor de Regras + Índices ===
+        1) Frontend (gamification.tsx): Adicionado tipo `MetaStatus` (estava faltando,
+           causava silent TS warning). Compilação OK.
+        2) Frontend (admin/approval/[id].tsx): Corrigidos imports relativos
+           (`../../../src/*` → `../../../../src/*`) pois o arquivo está 4 níveis deep.
+           Limpo metro cache (.metro-cache, .expo) e reiniciado expo — bundle OK sem
+           Server Error overlay.
+        3) Backend (server.py startup): Adicionados índices compostos faltantes:
+           - inventory: (user_id, status), (user_id, status, reverse_deadline_at), serial_number
+           - closures: (user_id, year, month) UNIQUE
+           - checklists: (validation_status, sent_at), (plate_norm, status, created_at)
+           Todos criados com sucesso (verificado via db.*.index_information()).
+        4) Endpoints validados manualmente: /auth/login, /gamification/meta,
+           /gamification/profile, /inventory — todos 200 OK.
+        5) Pendente: ativação Cloudinary (aguarda credenciais do usuário).
+
+
+agent_communication:
     - agent: "testing"
       message: |
         ==================== BACKEND VALIDATION v11 (P0+P1) — FULL PASS ====================
