@@ -257,7 +257,7 @@ const styles = StyleSheet.create({
   error: { color: colors.danger, marginTop: 4, fontSize: fonts.size.sm },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.7)",
+    backgroundColor: "rgba(10,10,10,0.55)",
     justifyContent: "flex-end",
   },
   sheet: {

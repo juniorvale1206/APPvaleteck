@@ -11,7 +11,7 @@ export default function Splash() {
   useEffect(() => {
     if (user === undefined) return;
     const t = setTimeout(() => {
-      if (user) router.replace("/(app)/home");
+      if (user) router.replace("/(app)/(tabs)/agenda");
       else router.replace("/login");
     }, 600);
     return () => clearTimeout(t);

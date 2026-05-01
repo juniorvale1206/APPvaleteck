@@ -34,7 +34,7 @@ export default function Login() {
     setLoading(true);
     try {
       await login(email.trim().toLowerCase(), password);
-      router.replace("/(app)/home");
+      router.replace("/(app)/(tabs)/agenda");
     } catch (e: any) {
       setError(apiErrorMessage(e));
     } finally {

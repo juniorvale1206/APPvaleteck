@@ -43,7 +43,7 @@ export default function ChecklistDetail() {
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={["top"]}>
       <View style={styles.header}>
-        <TouchableOpacity testID="detail-back" onPress={() => router.replace("/(app)/home")}><Ionicons name="arrow-back" size={26} color={colors.text} /></TouchableOpacity>
+        <TouchableOpacity testID="detail-back" onPress={() => router.replace("/(app)/(tabs)/agenda")}><Ionicons name="arrow-back" size={26} color={colors.text} /></TouchableOpacity>
         <Text style={styles.title}>Detalhes</Text>
         <View style={{ width: 26 }} />
       </View>

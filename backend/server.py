@@ -340,19 +340,57 @@ class AppointmentOut(BaseModel):
     empresa: str
     endereco: str
     scheduled_at: str
-    status: str  # agendado | em_andamento | concluido
+    status: str  # agendado | aceita | recusada | em_andamento | concluido
     checklist_id: Optional[str] = None
     vehicle_type: Optional[str] = ""
-    prioridade: str = "normal"  # alta | normal | baixa
+    vehicle_brand: Optional[str] = ""
+    vehicle_model: Optional[str] = ""
+    vehicle_year: Optional[str] = ""
+    prioridade: str = "normal"
     telefone: Optional[str] = ""
     tempo_estimado_min: Optional[int] = 60
+    observacoes: Optional[str] = ""
+    comissao: Optional[float] = None
+    delay_min: Optional[int] = 0  # computed at read time
+    penalty_amount: Optional[float] = 0.0
+    refuse_reason: Optional[str] = ""
+    accepted_at: Optional[str] = None
+    refused_at: Optional[str] = None
     created_at: Optional[str] = None
+
+
+# Penalidade de atraso: R$ 100,00 se check-in > 2h após horário agendado
+DELAY_PENALTY_THRESHOLD_MIN = 120
+DELAY_PENALTY_AMOUNT = 100.00
+
+
+def _compute_delay(doc: dict) -> dict:
+    """Adiciona delay_min e penalty_amount ao doc baseado em scheduled_at vs agora."""
+    sched = doc.get("scheduled_at")
+    status = doc.get("status", "agendado")
+    delay = 0
+    penalty = 0.0
+    if sched and status in ("agendado", "aceita"):
+        try:
+            s = datetime.fromisoformat(sched.replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            diff = (now - s).total_seconds() / 60
+            if diff > 0:
+                delay = int(diff)
+                if delay > DELAY_PENALTY_THRESHOLD_MIN:
+                    penalty = DELAY_PENALTY_AMOUNT
+        except Exception:
+            pass
+    doc["delay_min"] = delay
+    doc["penalty_amount"] = penalty
+    return doc
 
 
 @api.get("/appointments", response_model=List[AppointmentOut])
 async def list_appointments(user=Depends(get_current_user)):
     cursor = db.appointments.find({"user_id": user["id"]}, {"_id": 0}).sort("scheduled_at", 1)
-    return await cursor.to_list(length=200)
+    docs = await cursor.to_list(length=200)
+    return [_compute_delay(d) for d in docs]
 
 
 @api.get("/appointments/{aid}", response_model=AppointmentOut)
@@ -360,7 +398,49 @@ async def get_appointment(aid: str, user=Depends(get_current_user)):
     doc = await db.appointments.find_one({"id": aid, "user_id": user["id"]}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Agendamento não encontrado")
-    return doc
+    return _compute_delay(doc)
+
+
+class AcceptIn(BaseModel):
+    notes: Optional[str] = ""
+
+
+@api.post("/appointments/{aid}/accept", response_model=AppointmentOut)
+async def accept_appointment(aid: str, payload: AcceptIn, user=Depends(get_current_user)):
+    doc = await db.appointments.find_one({"id": aid, "user_id": user["id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Agendamento não encontrado")
+    if doc["status"] not in ("agendado",):
+        raise HTTPException(status_code=400, detail="Apenas OS agendadas podem ser aceitas")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.appointments.update_one(
+        {"id": aid},
+        {"$set": {"status": "aceita", "accepted_at": now_iso}},
+    )
+    updated = await db.appointments.find_one({"id": aid}, {"_id": 0})
+    return _compute_delay(updated)
+
+
+class RefuseIn(BaseModel):
+    reason: str
+
+
+@api.post("/appointments/{aid}/refuse", response_model=AppointmentOut)
+async def refuse_appointment(aid: str, payload: RefuseIn, user=Depends(get_current_user)):
+    doc = await db.appointments.find_one({"id": aid, "user_id": user["id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Agendamento não encontrado")
+    if doc["status"] not in ("agendado", "aceita"):
+        raise HTTPException(status_code=400, detail="OS não pode ser recusada neste estado")
+    if not payload.reason.strip():
+        raise HTTPException(status_code=400, detail="Motivo da recusa é obrigatório")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.appointments.update_one(
+        {"id": aid},
+        {"$set": {"status": "recusada", "refused_at": now_iso, "refuse_reason": payload.reason.strip()}},
+    )
+    updated = await db.appointments.find_one({"id": aid}, {"_id": 0})
+    return _compute_delay(updated)
 
 
 @api.post("/appointments/seed-new", response_model=AppointmentOut)
@@ -858,30 +938,42 @@ async def seed_appointments(user_id: str):
         return
     now = datetime.now(timezone.utc)
     samples = [
-        {"numero_os": "OS-2026-0001", "cliente_nome": "Carlos", "cliente_sobrenome": "Mendes",
-         "placa": "ABC1D23", "empresa": "Rastremix", "endereco": "Av. Paulista, 1000 - São Paulo/SP",
-         "scheduled_at": (now + timedelta(hours=2)).isoformat(), "vehicle_type": "carro",
-         "prioridade": "alta", "telefone": "(11) 98888-1111", "tempo_estimado_min": 90},
+        {"numero_os": "OS-2026-0001", "cliente_nome": "Transportadora Rápida", "cliente_sobrenome": "Ltda.",
+         "placa": "BRA2E19", "empresa": "Rastremix", "endereco": "São Miguel Paulista — São Paulo/SP",
+         "scheduled_at": (now - timedelta(hours=5, minutes=24)).isoformat(),
+         "vehicle_type": "carro", "vehicle_brand": "Mercedes-Benz", "vehicle_model": "Actros 2651", "vehicle_year": "2023",
+         "prioridade": "alta", "telefone": "(11) 98888-1111", "tempo_estimado_min": 90,
+         "observacoes": "Portaria: pedir por Carlos. Caminhão no pátio 3.", "comissao": 140.00},
         {"numero_os": "OS-2026-0002", "cliente_nome": "Mariana", "cliente_sobrenome": "Souza",
          "placa": "DEF2G45", "empresa": "Telensat", "endereco": "Rua das Flores, 250 - Campinas/SP",
-         "scheduled_at": (now + timedelta(hours=5)).isoformat(), "vehicle_type": "moto",
-         "prioridade": "normal", "telefone": "(11) 97777-2222", "tempo_estimado_min": 60},
+         "scheduled_at": (now + timedelta(hours=2)).isoformat(),
+         "vehicle_type": "moto", "vehicle_brand": "Honda", "vehicle_model": "CG 160", "vehicle_year": "2022",
+         "prioridade": "normal", "telefone": "(11) 97777-2222", "tempo_estimado_min": 60,
+         "observacoes": "", "comissao": 115.00},
         {"numero_os": "OS-2026-0003", "cliente_nome": "Roberto", "cliente_sobrenome": "Lima",
          "placa": "GHI3J67", "empresa": "Valeteck", "endereco": "Rod. Anhanguera, km 25 - Jundiaí/SP",
-         "scheduled_at": (now + timedelta(days=1)).isoformat(), "vehicle_type": "carro",
-         "prioridade": "normal", "telefone": "(11) 96666-3333", "tempo_estimado_min": 120},
+         "scheduled_at": (now + timedelta(days=1)).isoformat(),
+         "vehicle_type": "carro", "vehicle_brand": "Fiat", "vehicle_model": "Strada", "vehicle_year": "2024",
+         "prioridade": "normal", "telefone": "(11) 96666-3333", "tempo_estimado_min": 120,
+         "observacoes": "", "comissao": 120.00},
         {"numero_os": "OS-2026-0004", "cliente_nome": "Fernanda", "cliente_sobrenome": "Castro",
          "placa": "MNO4K89", "empresa": "GPS My", "endereco": "Av. Independência, 540 - Santo André/SP",
-         "scheduled_at": (now + timedelta(days=2)).isoformat(), "vehicle_type": "carro",
-         "prioridade": "baixa", "telefone": "(11) 95555-4444", "tempo_estimado_min": 60},
+         "scheduled_at": (now + timedelta(days=2)).isoformat(),
+         "vehicle_type": "carro", "vehicle_brand": "Volkswagen", "vehicle_model": "T-Cross", "vehicle_year": "2023",
+         "prioridade": "baixa", "telefone": "(11) 95555-4444", "tempo_estimado_min": 60,
+         "observacoes": "", "comissao": 95.00},
         {"numero_os": "OS-2026-0005", "cliente_nome": "Diego", "cliente_sobrenome": "Vieira",
          "placa": "PQR5L01", "empresa": "Topy Pro", "endereco": "R. da Consolação, 2200 - São Paulo/SP",
-         "scheduled_at": (now + timedelta(days=4, hours=3)).isoformat(), "vehicle_type": "moto",
-         "prioridade": "alta", "telefone": "(11) 94444-5555", "tempo_estimado_min": 45},
+         "scheduled_at": (now + timedelta(days=4, hours=3)).isoformat(),
+         "vehicle_type": "moto", "vehicle_brand": "Yamaha", "vehicle_model": "Fazer 250", "vehicle_year": "2023",
+         "prioridade": "alta", "telefone": "(11) 94444-5555", "tempo_estimado_min": 45,
+         "observacoes": "Pagamento antecipado", "comissao": 110.00},
         {"numero_os": "OS-2026-0006", "cliente_nome": "Patrícia", "cliente_sobrenome": "Nunes",
          "placa": "STU6M23", "empresa": "GPS Joy", "endereco": "Av. Paulista, 2500 - São Paulo/SP",
-         "scheduled_at": (now + timedelta(days=6)).isoformat(), "vehicle_type": "carro",
-         "prioridade": "normal", "telefone": "(11) 93333-6666", "tempo_estimado_min": 75},
+         "scheduled_at": (now + timedelta(days=6)).isoformat(),
+         "vehicle_type": "carro", "vehicle_brand": "Toyota", "vehicle_model": "Corolla", "vehicle_year": "2024",
+         "prioridade": "normal", "telefone": "(11) 93333-6666", "tempo_estimado_min": 75,
+         "observacoes": "", "comissao": 90.00},
     ]
     for s in samples:
         await db.appointments.insert_one({

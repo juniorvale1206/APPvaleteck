@@ -49,7 +49,7 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
           showToast({
             title: "🔔 Nova OS recebida",
             message: `${n.numero_os} • ${n.cliente_nome} ${n.cliente_sobrenome} (${n.placa})`,
-            route: "/(app)/agenda",
+            route: "/(app)/(tabs)/agenda",
           })
         );
       }
