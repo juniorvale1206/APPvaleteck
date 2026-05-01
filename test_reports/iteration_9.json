@@ -1,0 +1,41 @@
+{
+  "summary": "Valeteck v10 — Gamificação avançada validada end-to-end. Backend: 12/12 pytest green em test_valeteck_v10.py (auth 401 sem token, shape de level/achievements/weekly_history, 12 conquistas únicas, 8 semanas ISO ascendentes consecutivas, última semana == segunda-feira da semana atual UTC, fórmula XP cross-checked com /api/checklists: 12 OS sent, 2 fast (<1800s), 0 aprovadas → 12*50 + 2*30 = 660 XP → Prata, próximo Ouro@1500, xp_current_level=160, xp_next_level=1000). Frontend (390x844): login OK → Perfil mostra 'Conquistas e níveis' (testID menu-gamification, ícone ribbon roxo) → /gamification renderiza level-card preto com 'NÍVEL 2 🥈 Prata', 'XP Total 660', barra preenchida 16% e texto '160 / 1000 XP para 🥇 Ouro'. 3 summary cards exibem 4/12 Conquistas, 12 OS esta semana, 2 SLA rápidos (consistentes com profile.weekly_history[-1]). Tabs Conquistas+Histórico funcionam; grid 2-col com 12/12 achievements (testIDs ach-first_os…ach-full_partners), first_os e 10_os com borda amarela + 'Desbloqueado'; restantes com barra de progresso (12/50, 2/5, 2/10 etc). Tab Histórico mostra 8 weekRows (testID week-DD/MM) com BRL/OS/XP/⚡; semana atual deveria ter borda amarela + label 'Esta semana'. Perfil rodapé já atualizado para 'v10 — Gamificação avançada'. Nenhum bug crítico.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/gamification - tab Histórico", "issues": ["Lista é renderizada em ordem ascendente (semana mais antiga no topo, atual no fim). UX comum em barras semanais é o oposto (atual no topo). Considerar inverter render ou pelo menos auto-scroll para o final ao abrir a tab para destacar 'Esta semana' com borda amarela e os 660 XP atuais. Atualmente o usuário vê 5 semanas zeradas antes da atual."]},
+      {"screen": "/gamification - Histórico", "issues": ["Para semanas com total_net=0 a barra ainda usa width: max(barPct, 4%) — fica visualmente parecido com semana com pouco volume. Considerar ocultar barra quando count=0 ou usar opacity reduzida."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_valeteck_v10.py",
+    "/app/test_reports/pytest/v10_results.xml"
+  ],
+  "action_items": [
+    "Nenhum bloqueante. Sugestões UX opcionais: (1) ordenar Histórico do mais recente para o mais antigo, ou (2) abrir já scrollado no final para destacar 'Esta semana' com sua borda amarela; (3) aplicar opacity reduzida em weekRow com count=0 para desambiguar de semana com volume baixo."
+  ],
+  "critical_code_review_comments": [
+    "Gamification: _compute_xp/_compute_achievements/_compute_weekly_history são O(n) e só são chamadas em GET /gamification/profile (sem persistência) — performance OK até ~5k checklists por usuário (limite cursor.to_list). Para escalar acima disso, considerar materializar XP em campo no documento ou em coleção user_stats atualizada no envio do checklist.",
+    "_iso_week_start usa dt.weekday() em UTC — correto para ISO week (segunda=0). Funciona com sent_at/created_at em ISO 8601 UTC. Documentos sem sent_at e sem created_at são silently skipped no weekly_history (linha 841-842) — ok, mas seria útil logar ao menos em debug.",
+    "Filtro do GET /gamification/profile inclui status 'enviado','em_auditoria','aprovado','reprovado' — mesmo conjunto usado no resto do app. Consistente.",
+    "Frontend: gamification.tsx (224 linhas) está dentro do limite de 700 linhas, bem componentizado em-arquivo. Usa AsyncStorage para LAST_LEVEL_KEY com lógica correta (lastNum>0 evita toast no primeiro acesso). Bom.",
+    "Frontend: weekly_history depende de p.weekly_history[p.weekly_history.length - 1] para 'OS esta semana' / 'SLA rápidos' — assume sempre 8 elementos. Backend garante isso, mas defensivamente um || [] e ?.count poderia evitar crash se array vier vazio (já tem ?? 0, ok).",
+    "Achievement progress_pct: para targets monetários (earn_1k=1000, earn_5k=5000) usa int(total_net) em current — perde centavos mas não é crítico para a barra. Aceitável.",
+    "Sem index dedicado em db.checklists.find({user_id, status}) — recomenda-se criar índice composto (user_id, status, sent_at) para performance estável conforme histórico cresce."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_valeteck_v10.py (novo)"
+  ],
+  "success_rate": {"backend": "12/12 (100%)", "frontend": "100% — level-card, summary 3 cards, tabs, 12/12 achievements, 8 weekRows todos renderizados; menu-gamification em Perfil OK"},
+  "seed_data_creation": "Nenhuma. Testes apenas leem GET /api/gamification/profile e cross-check com GET /api/checklists.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "v10 endpoint: GET /api/gamification/profile (Bearer). Login técnico: tecnico@valeteck.com/tecnico123. Cenário atual no banco: 12 OS sent, 2 com elapsed<1800s, 0 aprovadas → XP=660 → Prata (level 2), faltam 840 XP para Ouro. testIDs frontend: menu-gamification (Perfil), level-card, tab-achievements, tab-history, gami-back, gami-refresh, ach-{id} (12: first_os, 10_os, 50_os, 100_os, 5_fast, 10_fast, 5_approved, 10_approved, triple_day, earn_1k, earn_5k, full_partners), week-{DD/MM}. AsyncStorage key 'valeteck_last_level_seen' para detecção de level-up. URL frontend: /(app)/gamification (rendered as /gamification). Para forçar level-up no frontend: AsyncStorage.setItem('valeteck_last_level_seen','1') antes de carregar /gamification — o useFocusEffect dispara load() que detecta data.level.number(2) > 1 e mostra toast '🎉 Subiu de nível!'.",
+  "rca_of_issue": "N/A — nenhum bug encontrado em v10. Todas as 12 features solicitadas estão funcionando conforme spec (backend + frontend)."
+}
