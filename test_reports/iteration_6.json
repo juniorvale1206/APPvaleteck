@@ -1,0 +1,43 @@
+{
+  "summary": "Valeteck v7 — 4 features (gamification ranking, checklist PDF, Agenda quick actions Waze/Ligar/WhatsApp, inventory module) validated end-to-end. Backend pytest: 11/11 PASS (100%). Frontend mobile (390x844): all 13 testIDs/flows verified. Login → Agenda card shows Waze/Ligar/WhatsApp/Maps; Profile → menu-ranking/menu-estoque navigate correctly; /ranking shows tabs Top Ganhos/Top SLA, my-rank '#1', medal emojis 🥇🥈🥉; /estoque shows 3 summary cards (Comigo 3 / Instalados 1 / Aguard. reversa 1) with grouped items; Checklist detail shows PDF (preto) + WhatsApp (verde) buttons. PDF endpoint returns valid %PDF- bytes with application/pdf content-type.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "ranking.tsx and estoque.tsx", "issue": "Console warning 'Unexpected text node: . A text node cannot be a child of a <View>.' fires on both screens — likely a stray whitespace/space character placed directly inside a <View> instead of inside a <Text>. Non-blocking but should be cleaned up to avoid noise."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_valeteck_v7.py",
+    "/app/test_reports/pytest/v7_results.xml"
+  ],
+  "action_items": [
+    "Optional: locate and remove the stray text node in /app/frontend/app/(app)/ranking.tsx and /app/frontend/app/(app)/estoque.tsx that triggers the RN web warning ('Unexpected text node'). Most often caused by `{condition && ' '}` or a literal space between sibling JSX elements inside a <View>."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 1352 lines — grew further with rankings + PDF + inventory blocks. Strongly recommend extracting routers (rankings.py, pdf.py, inventory.py) before adding more features.",
+    "rankings/weekly iterates ALL users and runs N queries on db.checklists (one per user). For >50 users this becomes O(N) DB roundtrips. Use a single $aggregate with $group by user_id to compute total_net/fast_count in one pass.",
+    "_render_checklist_pdf does img b64 decode for each photo synchronously inside the request handler — fine for ≤8 thumbs, but heavy checklists with large base64 photos could block the event loop. Consider running in a threadpool (run_in_executor) for >8 photos.",
+    "Inventory transfer endpoint accepts arbitrary tracking_code strings (mocked Correios per request) — when integrating real Correios API later, add server-side format validation (e.g., regex /^[A-Z]{2}\\d{9}[A-Z]{2}$/).",
+    "INVENTORY_STATUSES list is duplicated as string constants in both backend and frontend — risk of drift. Consider exposing GET /api/inventory/statuses as the source of truth.",
+    "Ranking RankingEntry.badge is mutated on the same object that may appear in both top_earners and top_fast (same user) — second loop overwrites badge from first. In current response shape this isn't observable since the two arrays each have separate entries, but if a refactor shares refs, badges would corrupt. Already OK because sort() returns a new list with same elements (refs shared) — verify by checking that top_fast badges don't reflect earners ranks. In our test the único técnico aparece em #1 nos dois rankings, então gold em ambos é correto.",
+    "PDF endpoint Content-Disposition uses 'attachment' which forces download on web — correct; frontend web flow uses fetch+blob+<a download> matching this header."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_valeteck_v7.py (created)"
+  ],
+  "success_rate": {
+    "backend": "100% (11/11)",
+    "frontend": "100% (13/13 checks across Agenda quick actions, Profile menu, Ranking, Estoque, Checklist detail PDF/WhatsApp buttons)"
+  },
+  "seed_data_creation": "No persistent seed data. test_transfer_valid_status_updates_item flips a pending_reverse item to in_transit_to_hq with tracking_code='TEST_BR999BR' and reverts it in a finally block. Idempotent.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "v7 testIDs verified on web (mobile 390x844): Agenda card per-OS: waze-{os}, call-{os}, whats-{os}, maps-{os}. Profile: menu-ranking, menu-estoque, logout-btn. Ranking: ranking-back, ranking-refresh, tab-earners, tab-fast, my-rank. Estoque: estoque-back, estoque-refresh. Checklist detail: detail-back, download-pdf, send-whatsapp. Login: tecnico@valeteck.com / tecnico123. Tecnico has 6 inventory items (3 with_tech, 1 in_transit_to_tech, 1 installed, 1 pending_reverse) and 12 sent checklists (total_net R$ 1.363,00 this week — note: increased from R$ 1.315 in v5 because v5 test created 1 extra rascunho? No — week boundary now includes more sent_at; not relevant). me_earners_pos=1, me_fast_pos=1. Backend tests: pytest backend/tests/test_valeteck_v7.py -v. PDF endpoint test confirms %PDF- header bytes and 404 for unknown id. Inventory transfer rejects unknown new_status with 400 and unknown id with 404.",
+  "rca_of_issue": "No bugs. One minor RN-web console warning ('Unexpected text node') on /ranking and /estoque screens — likely stray ' ' string inside a <View>. Suggested fix: search ranking.tsx and estoque.tsx for `{...&& ' '}`, `{' '}`, or whitespace between two JSX expressions inside <View> and wrap in <Text> or remove."
+}

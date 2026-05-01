@@ -13,8 +13,11 @@ from typing import List, Optional
 
 import bcrypt
 import jwt
+import base64 as _b64
+from io import BytesIO
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import Response
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
@@ -649,6 +652,298 @@ async def my_earnings(period: str = "month", user=Depends(get_current_user)):
     )
 
 
+# ----------------- Weekly Ranking (Gamification) -----------------
+class RankingEntry(BaseModel):
+    user_id: str
+    name: str
+    email: str
+    total_net: float
+    count: int
+    fast_count: int
+    avg_elapsed_min: int
+    badge: str  # "gold" | "silver" | "bronze" | ""
+    is_me: bool = False
+
+
+class RankingOut(BaseModel):
+    period: str
+    top_earners: List[RankingEntry]
+    top_fast: List[RankingEntry]
+    me_earners_pos: Optional[int] = None
+    me_fast_pos: Optional[int] = None
+
+
+@api.get("/rankings/weekly", response_model=RankingOut)
+async def rankings_weekly(user=Depends(get_current_user)):
+    start = _period_start("week")
+    users = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(length=500)
+    entries: List[RankingEntry] = []
+    for u in users:
+        q: dict = {
+            "user_id": u["id"],
+            "status": {"$in": ["enviado", "em_auditoria", "aprovado", "reprovado"]},
+        }
+        if start is not None:
+            q["$or"] = [
+                {"sent_at": {"$gte": start.isoformat()}},
+                {"$and": [{"sent_at": {"$in": [None, ""]}}, {"created_at": {"$gte": start.isoformat()}}]},
+            ]
+        cursor = db.checklists.find(q, {"_id": 0})
+        docs = await cursor.to_list(length=2000)
+        total_net = 0.0
+        fast_count = 0
+        elapsed_sum = 0
+        for d in docs:
+            empresa = d.get("empresa", "")
+            tipo = d.get("tipo_atendimento") or "Instalação"
+            base = _base_price(empresa, tipo)
+            elapsed = int(d.get("execution_elapsed_sec") or 0)
+            bonus = _sla_bonus(base, elapsed)
+            total_net += base + bonus
+            elapsed_sum += elapsed
+            if elapsed > 0 and elapsed < SLA_FAST_SEC:
+                fast_count += 1
+        n = len(docs)
+        avg_min = (elapsed_sum // n // 60) if n > 0 and elapsed_sum > 0 else 0
+        entries.append(RankingEntry(
+            user_id=u["id"],
+            name=u["name"],
+            email=u["email"],
+            total_net=round(total_net, 2),
+            count=n,
+            fast_count=fast_count,
+            avg_elapsed_min=avg_min,
+            badge="",
+            is_me=(u["id"] == user["id"]),
+        ))
+    # Top earners (ordenado por total_net)
+    earners = sorted(entries, key=lambda x: x.total_net, reverse=True)
+    me_earners_pos = next((i + 1 for i, e in enumerate(earners) if e.is_me), None)
+    for i, e in enumerate(earners[:5]):
+        e.badge = "gold" if i == 0 else "silver" if i == 1 else "bronze" if i == 2 else ""
+    top_earners = earners[:5]
+    # Top fast (ordenado por fast_count desc + avg_elapsed asc)
+    fasts = sorted(entries, key=lambda x: (-x.fast_count, x.avg_elapsed_min if x.avg_elapsed_min > 0 else 999999))
+    me_fast_pos = next((i + 1 for i, e in enumerate(fasts) if e.is_me), None)
+    for i, e in enumerate(fasts[:5]):
+        e.badge = "gold" if i == 0 else "silver" if i == 1 else "bronze" if i == 2 else ""
+    top_fast = fasts[:5]
+    return RankingOut(period="week", top_earners=top_earners, top_fast=top_fast, me_earners_pos=me_earners_pos, me_fast_pos=me_fast_pos)
+
+
+# ----------------- PDF do checklist -----------------
+def _render_checklist_pdf(doc: dict) -> bytes:
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors as rc
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RImage
+    except ImportError:
+        raise HTTPException(status_code=500, detail="reportlab não instalado")
+
+    buf = BytesIO()
+    pdf = SimpleDocTemplate(buf, pagesize=A4, leftMargin=1.5 * cm, rightMargin=1.5 * cm, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    styles = getSampleStyleSheet()
+    h1 = ParagraphStyle("h1", parent=styles["Heading1"], textColor=rc.HexColor("#0A0A0A"), fontSize=20, alignment=0)
+    h2 = ParagraphStyle("h2", parent=styles["Heading2"], textColor=rc.HexColor("#0A0A0A"), fontSize=14, spaceBefore=10)
+    body = ParagraphStyle("body", parent=styles["BodyText"], fontSize=10, textColor=rc.HexColor("#222"))
+    small = ParagraphStyle("small", parent=styles["BodyText"], fontSize=8, textColor=rc.HexColor("#555"))
+
+    story = []
+    # Header
+    story.append(Paragraph(f"<b>VALE</b><font color='#D4B000'><b>TECK</b></font> — Checklist de Instalação", h1))
+    story.append(Paragraph(f"Nº <b>{doc.get('numero','')}</b> • Status: <b>{(doc.get('status') or '').upper()}</b>", body))
+    story.append(Paragraph(f"Emitido em: {doc.get('sent_at') or doc.get('created_at')}", small))
+    story.append(Spacer(1, 12))
+
+    # Cliente
+    story.append(Paragraph("Cliente", h2))
+    tbl = Table([
+        ["Nome", f"{doc.get('nome','')} {doc.get('sobrenome','')}"],
+        ["Placa", doc.get("placa", "")],
+        ["Telefone", doc.get("telefone") or "—"],
+        ["Observações", doc.get("obs_iniciais") or "—"],
+    ], colWidths=[4 * cm, 12 * cm])
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), rc.HexColor("#F0F3F7")),
+        ("GRID", (0, 0), (-1, -1), 0.3, rc.HexColor("#CCCCCC")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+    ]))
+    story.append(tbl)
+
+    # Instalação
+    story.append(Paragraph("Instalação", h2))
+    bat = f"{doc.get('battery_state','—')}" + (f" • {doc.get('battery_voltage')}V" if doc.get("battery_voltage") else "")
+    tbl = Table([
+        ["Empresa", doc.get("empresa", "")],
+        ["Equipamento", doc.get("equipamento", "")],
+        ["Tipo", doc.get("tipo_atendimento") or "—"],
+        ["IMEI", doc.get("imei") or "—"],
+        ["ICCID", doc.get("iccid") or "—"],
+        ["Acessórios", ", ".join(doc.get("acessorios") or []) or "—"],
+        ["Bateria", bat],
+        ["Tempo execução", f"{(doc.get('execution_elapsed_sec') or 0) // 60} min" if doc.get("execution_elapsed_sec") else "—"],
+        ["Dispositivo", "✔ Online" if doc.get("device_online") is True else "✘ Offline" if doc.get("device_online") is False else "Não testado"],
+    ], colWidths=[4 * cm, 12 * cm])
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), rc.HexColor("#F0F3F7")),
+        ("GRID", (0, 0), (-1, -1), 0.3, rc.HexColor("#CCCCCC")),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+    ]))
+    story.append(tbl)
+
+    # Fotos
+    photos = doc.get("photos") or []
+    if photos:
+        story.append(Paragraph(f"Evidências ({len(photos)} fotos)", h2))
+        thumbs = []
+        for p in photos[:8]:
+            try:
+                b64 = p.get("base64", "")
+                if "," in b64:
+                    b64 = b64.split(",", 1)[1]
+                img_bytes = _b64.b64decode(b64)
+                img = RImage(BytesIO(img_bytes), width=4 * cm, height=3 * cm)
+                thumbs.append([img, Paragraph(p.get("label", ""), small)])
+            except Exception:
+                continue
+        # Grid 2 colunas
+        if thumbs:
+            rows = []
+            for i in range(0, len(thumbs), 2):
+                row = [thumbs[i]]
+                if i + 1 < len(thumbs):
+                    row.append(thumbs[i + 1])
+                else:
+                    row.append("")
+                rows.append(row)
+            tbl = Table(rows, colWidths=[8 * cm, 8 * cm])
+            tbl.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
+            story.append(tbl)
+
+    # Assinatura
+    sig = doc.get("signature_base64") or ""
+    if sig:
+        story.append(Paragraph("Assinatura do cliente", h2))
+        try:
+            b64 = sig.split(",", 1)[1] if "," in sig else sig
+            story.append(RImage(BytesIO(_b64.b64decode(b64)), width=8 * cm, height=3 * cm))
+            story.append(Paragraph(f"<i>{doc.get('nome','')} {doc.get('sobrenome','')}</i>", small))
+        except Exception:
+            pass
+
+    # Alertas
+    alerts = doc.get("alerts") or []
+    if alerts:
+        story.append(Paragraph("Alertas", h2))
+        for a in alerts:
+            story.append(Paragraph(f"• {a}", body))
+
+    pdf.build(story)
+    return buf.getvalue()
+
+
+@api.get("/checklists/{cid}/pdf")
+async def checklist_pdf(cid: str, user=Depends(get_current_user)):
+    doc = await db.checklists.find_one({"id": cid, "user_id": user["id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Checklist não encontrado")
+    pdf_bytes = _render_checklist_pdf(doc)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=checklist-{doc['numero']}.pdf"},
+    )
+
+
+# ----------------- Inventário (Estoque do técnico) -----------------
+INVENTORY_STATUSES = [
+    "in_stock",              # na central
+    "in_transit_to_tech",    # a caminho do técnico
+    "with_tech",             # em posse do técnico
+    "installed",             # instalado em veículo
+    "pending_reverse",       # aguardando logística reversa
+    "in_transit_to_hq",      # voltando para a central
+    "received_at_hq",        # recebido de volta
+]
+
+
+class InventoryItem(BaseModel):
+    id: str
+    user_id: Optional[str] = None
+    tipo: str  # rastreador | bloqueador | acessório
+    modelo: str
+    imei: Optional[str] = ""
+    iccid: Optional[str] = ""
+    serie: Optional[str] = ""
+    empresa: Optional[str] = ""
+    status: str
+    checklist_id: Optional[str] = None
+    placa: Optional[str] = ""
+    tracking_code: Optional[str] = ""
+    updated_at: str
+    created_at: str
+
+
+class InventoryTransferIn(BaseModel):
+    new_status: str
+    tracking_code: Optional[str] = ""
+
+
+@api.get("/inventory/me", response_model=List[InventoryItem])
+async def my_inventory(user=Depends(get_current_user)):
+    cursor = db.inventory.find({"user_id": user["id"]}, {"_id": 0}).sort("updated_at", -1)
+    return await cursor.to_list(length=500)
+
+
+@api.post("/inventory/{item_id}/transfer", response_model=InventoryItem)
+async def inventory_transfer(item_id: str, payload: InventoryTransferIn, user=Depends(get_current_user)):
+    if payload.new_status not in INVENTORY_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status inválido. Use: {', '.join(INVENTORY_STATUSES)}")
+    item = await db.inventory.find_one({"id": item_id, "user_id": user["id"]}, {"_id": 0})
+    if not item:
+        raise HTTPException(status_code=404, detail="Item não encontrado")
+    await db.inventory.update_one(
+        {"id": item_id},
+        {"$set": {
+            "status": payload.new_status,
+            "tracking_code": payload.tracking_code or item.get("tracking_code", ""),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    updated = await db.inventory.find_one({"id": item_id}, {"_id": 0})
+    return updated
+
+
+async def seed_inventory(user_id: str):
+    existing = await db.inventory.count_documents({"user_id": user_id})
+    if existing > 0:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    samples = [
+        {"tipo": "Rastreador", "modelo": "Rastreador GPS XT-2000", "imei": "123456789012345", "iccid": "89550100012345678901", "serie": "SN-X2-001", "empresa": "Rastremix", "status": "with_tech"},
+        {"tipo": "Rastreador", "modelo": "Rastreador GPS Plus", "imei": "234567890123456", "iccid": "89550100012345678902", "serie": "SN-GP-002", "empresa": "Telensat", "status": "with_tech"},
+        {"tipo": "Bloqueador", "modelo": "Bloqueador Veicular V8", "imei": "", "iccid": "", "serie": "SN-V8-003", "empresa": "Valeteck", "status": "with_tech"},
+        {"tipo": "Rastreador", "modelo": "Rastreador Moto MT-100", "imei": "345678901234567", "iccid": "89550100012345678903", "serie": "SN-MT-004", "empresa": "GPS My", "status": "in_transit_to_tech", "tracking_code": "BR123456789BR"},
+        {"tipo": "Rastreador", "modelo": "Rastreador Híbrido GSM/GPS", "imei": "456789012345678", "iccid": "89550100012345678904", "serie": "SN-HY-005", "empresa": "Topy Pro", "status": "installed", "placa": "BRA1A23"},
+        {"tipo": "Bloqueador", "modelo": "Bloqueador Anti-Furto BR-9", "imei": "", "iccid": "", "serie": "SN-BR-006", "empresa": "Rastremix", "status": "pending_reverse", "placa": "DEF1B45"},
+    ]
+    for s in samples:
+        await db.inventory.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "checklist_id": None,
+            "tracking_code": "",
+            "placa": "",
+            "created_at": now,
+            "updated_at": now,
+            **s,
+        })
+    logger.info(f"Seeded {len(samples)} inventory items for user {user_id}")
+
+
 # ----------------- Device Test (mock) -----------------
 class DeviceTestIn(BaseModel):
     imei: str
@@ -1035,6 +1330,7 @@ async def on_startup():
     tech = await db.users.find_one({"email": os.environ["TECH_EMAIL"].lower()})
     if tech:
         await seed_appointments(tech["id"])
+        await seed_inventory(tech["id"])
     logger.info("Valeteck API ready")
 
 

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl, ActivityIndicator, Alert, TextInput, Modal, Pressable } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl, ActivityIndicator, Alert, TextInput, Modal, Pressable, Linking, Platform } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -361,9 +361,60 @@ function OSCard({ appt, onAccept, onRefuseRequest, onOpen, acting }: { appt: App
         </View>
 
         {/* Endereço */}
-        <View style={styles.addressRow}>
-          <Ionicons name="location-outline" size={16} color={colors.textMuted} />
-          <Text style={styles.addressTxt} numberOfLines={2}>{appt.endereco}</Text>
+        <TouchableOpacity
+          testID={`maps-${appt.numero_os}`}
+          onPress={() => {
+            const q = encodeURIComponent(appt.endereco);
+            const url = Platform.OS === "ios"
+              ? `http://maps.apple.com/?q=${q}`
+              : `https://www.google.com/maps/search/?api=1&query=${q}`;
+            Linking.openURL(url).catch(() => {});
+          }}
+          style={styles.addressRow}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="location-outline" size={16} color={colors.info} />
+          <Text style={[styles.addressTxt, { color: colors.info, textDecorationLine: "underline" }]} numberOfLines={2}>{appt.endereco}</Text>
+          <Ionicons name="open-outline" size={14} color={colors.info} />
+        </TouchableOpacity>
+
+        {/* Quick actions: Waze / Telefone */}
+        <View style={styles.quickRow}>
+          <TouchableOpacity
+            testID={`waze-${appt.numero_os}`}
+            onPress={() => {
+              const q = encodeURIComponent(appt.endereco);
+              Linking.openURL(`https://waze.com/ul?q=${q}&navigate=yes`).catch(() => {});
+            }}
+            style={styles.quickBtn}
+          >
+            <Ionicons name="navigate-circle-outline" size={18} color={colors.info} />
+            <Text style={styles.quickTxt}>Waze</Text>
+          </TouchableOpacity>
+          {!!appt.telefone && (
+            <TouchableOpacity
+              testID={`call-${appt.numero_os}`}
+              onPress={() => Linking.openURL(`tel:${appt.telefone!.replace(/\D/g, "")}`).catch(() => {})}
+              style={styles.quickBtn}
+            >
+              <Ionicons name="call-outline" size={18} color={colors.success} />
+              <Text style={[styles.quickTxt, { color: colors.success }]}>Ligar</Text>
+            </TouchableOpacity>
+          )}
+          {!!appt.telefone && (
+            <TouchableOpacity
+              testID={`whats-${appt.numero_os}`}
+              onPress={() => {
+                const phone = appt.telefone!.replace(/\D/g, "");
+                const msg = encodeURIComponent(`Olá ${appt.cliente_nome}, aqui é da Valeteck. Estou a caminho para a instalação do rastreador (${appt.numero_os}).`);
+                Linking.openURL(`https://wa.me/55${phone}?text=${msg}`).catch(() => {});
+              }}
+              style={styles.quickBtn}
+            >
+              <Ionicons name="logo-whatsapp" size={18} color="#25D366" />
+              <Text style={[styles.quickTxt, { color: "#25D366" }]}>WhatsApp</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         {/* Comissão */}
@@ -478,6 +529,9 @@ const styles = StyleSheet.create({
   plateTxt: { color: colors.onPrimary, fontWeight: "900", letterSpacing: 1, fontSize: fonts.size.sm },
   addressRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
   addressTxt: { color: colors.textMuted, fontSize: fonts.size.sm, flex: 1 },
+  quickRow: { flexDirection: "row", gap: 8, marginBottom: 10 },
+  quickBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingVertical: 8, borderRadius: radii.sm, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border },
+  quickTxt: { color: colors.info, fontWeight: "700", fontSize: fonts.size.xs },
   commRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingTop: 10, borderTopWidth: 1, borderTopColor: colors.divider },
   commLabel: { color: colors.textMuted, fontSize: fonts.size.sm, fontWeight: "600" },
   commValue: { color: colors.success, fontSize: fonts.size.xl, fontWeight: "900" },

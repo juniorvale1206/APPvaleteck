@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Image } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Image, Platform, Linking, Alert } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as FileSystem from "expo-file-system";
+import * as Sharing from "expo-sharing";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { api, apiErrorMessage, type Checklist } from "../../../src/api";
+import { api, apiErrorMessage, type Checklist, TOKEN_KEY } from "../../../src/api";
 import { StatusBadge } from "../../../src/components";
 import { colors, fonts, radii, space } from "../../../src/theme";
 
@@ -21,6 +24,7 @@ export default function ChecklistDetail() {
   const router = useRouter();
   const [item, setItem] = useState<Checklist | null>(null);
   const [error, setError] = useState("");
+  const [pdfBusy, setPdfBusy] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -30,6 +34,52 @@ export default function ChecklistDetail() {
       } catch (e) { setError(apiErrorMessage(e)); }
     })();
   }, [id]);
+
+  const downloadPdf = async (): Promise<string | null> => {
+    if (!item) return null;
+    setPdfBusy(true);
+    try {
+      const token = await AsyncStorage.getItem(TOKEN_KEY);
+      const base = (process.env.EXPO_PUBLIC_BACKEND_URL as string) || "";
+      const url = `${base}/api/checklists/${item.id}/pdf`;
+      if (Platform.OS === "web") {
+        // Web: fetch as blob and trigger download
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+        if (!res.ok) throw new Error("Falha ao gerar PDF");
+        const blob = await res.blob();
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = `checklist-${item.numero}.pdf`;
+        link.click();
+        return null;
+      }
+      const target = FileSystem.cacheDirectory + `checklist-${item.numero}.pdf`;
+      const res = await FileSystem.downloadAsync(url, target, { headers: { Authorization: `Bearer ${token}` } });
+      return res.uri;
+    } catch (e: any) { Alert.alert("Erro", e?.message || apiErrorMessage(e)); return null; }
+    finally { setPdfBusy(false); }
+  };
+
+  const sharePdf = async () => {
+    const uri = await downloadPdf();
+    if (!uri || Platform.OS === "web") return;
+    const can = await Sharing.isAvailableAsync();
+    if (!can) { Alert.alert("Compartilhar", "Compartilhamento indisponível"); return; }
+    await Sharing.shareAsync(uri, { mimeType: "application/pdf", dialogTitle: `Checklist ${item?.numero}` });
+  };
+
+  const sendWhatsApp = () => {
+    if (!item) return;
+    const phone = (item.telefone || "").replace(/\D/g, "");
+    const full = `${item.nome} ${item.sobrenome}`.trim();
+    const msg = encodeURIComponent(
+      `Olá ${item.nome}! Segue o comprovante do atendimento Valeteck.\n\n` +
+      `🔧 Nº ${item.numero}\n🚗 Placa ${item.placa}\n🏢 ${item.empresa}\n📦 ${item.equipamento}\n\n` +
+      `Em caso de dúvida, me chame por aqui. Obrigado!`
+    );
+    const url = phone ? `https://wa.me/55${phone}?text=${msg}` : `https://wa.me/?text=${msg}`;
+    Linking.openURL(url).catch(() => Alert.alert("Erro", "Não foi possível abrir o WhatsApp"));
+  };
 
   if (error) return (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg, padding: 16 }}><Text style={{ color: colors.danger }}>{error}</Text></SafeAreaView>
@@ -46,6 +96,19 @@ export default function ChecklistDetail() {
         <TouchableOpacity testID="detail-back" onPress={() => router.replace("/(app)/(tabs)/agenda")}><Ionicons name="arrow-back" size={26} color={colors.text} /></TouchableOpacity>
         <Text style={styles.title}>Detalhes</Text>
         <View style={{ width: 26 }} />
+      </View>
+
+      <View style={styles.shareBar}>
+        <TouchableOpacity testID="download-pdf" onPress={sharePdf} disabled={pdfBusy} style={styles.shareBtn}>
+          {pdfBusy ? <ActivityIndicator size="small" color={colors.onPrimary} /> : <>
+            <Ionicons name="document-text" size={18} color={colors.onPrimary} />
+            <Text style={styles.shareTxt}>PDF</Text>
+          </>}
+        </TouchableOpacity>
+        <TouchableOpacity testID="send-whatsapp" onPress={sendWhatsApp} style={[styles.shareBtn, { backgroundColor: "#25D366" }]}>
+          <Ionicons name="logo-whatsapp" size={18} color="#fff" />
+          <Text style={[styles.shareTxt, { color: "#fff" }]}>WhatsApp</Text>
+        </TouchableOpacity>
       </View>
 
       <ScrollView contentContainerStyle={{ padding: space.lg, paddingBottom: 60 }}>
@@ -130,6 +193,9 @@ export default function ChecklistDetail() {
 const styles = StyleSheet.create({
   header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: space.lg, paddingVertical: space.sm },
   title: { color: colors.text, fontWeight: "800", fontSize: fonts.size.lg },
+  shareBar: { flexDirection: "row", gap: 10, paddingHorizontal: space.lg, paddingBottom: space.sm },
+  shareBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, borderRadius: radii.md, backgroundColor: colors.brandBlack },
+  shareTxt: { color: colors.primary, fontWeight: "900", fontSize: fonts.size.sm },
   topCard: { backgroundColor: colors.surface, borderRadius: radii.lg, padding: space.lg, borderWidth: 1, borderColor: colors.border, marginBottom: space.md },
   numero: { color: colors.primary, fontWeight: "800", fontSize: fonts.size.md },
   client: { color: colors.text, fontSize: fonts.size.xl, fontWeight: "800", marginTop: 8 },

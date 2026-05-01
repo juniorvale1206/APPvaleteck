@@ -1,11 +1,11 @@
 import React from "react";
-import { View, Text, StyleSheet, TouchableOpacity, Alert } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../src/auth";
 import { Btn } from "../../src/components";
-import { colors, fonts, radii, space } from "../../src/theme";
+import { colors, fonts, radii, shadow, space } from "../../src/theme";
 
 export default function Profile() {
   const { user, logout } = useAuth();
@@ -25,17 +25,19 @@ export default function Profile() {
     ]);
   };
 
+  const MenuRow = ({ icon, label, color, onPress, testID }: { icon: keyof typeof Ionicons.glyphMap; label: string; color: string; onPress: () => void; testID: string }) => (
+    <TouchableOpacity testID={testID} onPress={onPress} style={styles.menuRow} activeOpacity={0.8}>
+      <View style={[styles.menuIcon, { backgroundColor: color + "22" }]}>
+        <Ionicons name={icon} size={22} color={color} />
+      </View>
+      <Text style={styles.menuLabel}>{label}</Text>
+      <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+    </TouchableOpacity>
+  );
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={["top"]}>
-      <View style={styles.header}>
-        <TouchableOpacity testID="profile-back" onPress={() => router.back()} style={styles.iconBtn}>
-          <Ionicons name="arrow-back" size={24} color={colors.text} />
-        </TouchableOpacity>
-        <Text style={styles.title}>Perfil</Text>
-        <View style={{ width: 24 }} />
-      </View>
-
-      <View style={{ padding: space.lg }}>
+      <ScrollView contentContainerStyle={{ padding: space.lg, paddingBottom: 80 }}>
         <View style={styles.card}>
           <View style={styles.avatar}>
             <Ionicons name="person" size={40} color={colors.onPrimary} />
@@ -48,50 +50,31 @@ export default function Profile() {
         </View>
 
         <View style={{ marginTop: space.lg }}>
+          <Text style={styles.sectionTitle}>Operações</Text>
+          <MenuRow testID="menu-ranking" icon="trophy-outline" label="Ranking semanal" color="#F59E0B" onPress={() => router.push("/(app)/ranking")} />
+          <MenuRow testID="menu-estoque" icon="cube-outline" label="Meu estoque" color="#3B82F6" onPress={() => router.push("/(app)/estoque")} />
+        </View>
+
+        <View style={{ marginTop: space.lg }}>
           <Btn testID="logout-btn" title="Sair" icon="log-out-outline" variant="danger" onPress={onLogout} />
         </View>
 
-        <Text style={styles.versionInfo}>Valeteck • v1.0.0 MVP</Text>
-      </View>
+        <Text style={styles.versionInfo}>Valeteck • v7 — Instalação veicular</Text>
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: space.lg,
-    paddingVertical: space.sm,
-  },
-  iconBtn: { padding: 4 },
-  title: { color: colors.text, fontWeight: "800", fontSize: fonts.size.xl },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: space.lg,
-    alignItems: "center",
-  },
-  avatar: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: colors.primary,
-    alignItems: "center",
-    justifyContent: "center",
-  },
+  card: { backgroundColor: colors.surface, borderRadius: radii.lg, padding: space.lg, alignItems: "center", ...shadow.sm },
+  avatar: { width: 80, height: 80, borderRadius: 40, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center" },
   name: { color: colors.text, fontSize: fonts.size.xl, fontWeight: "800", marginTop: 12 },
   email: { color: colors.textMuted, fontSize: fonts.size.sm, marginTop: 4 },
-  roleBadge: {
-    marginTop: 10,
-    backgroundColor: colors.surfaceAlt,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: radii.pill,
-  },
-  roleTxt: { color: colors.primary, fontWeight: "800", fontSize: fonts.size.xs, letterSpacing: 1 },
+  roleBadge: { marginTop: 10, backgroundColor: colors.surfaceAlt, paddingHorizontal: 12, paddingVertical: 4, borderRadius: radii.pill },
+  roleTxt: { color: colors.brandBlack, fontWeight: "800", fontSize: fonts.size.xs, letterSpacing: 1 },
+  sectionTitle: { color: colors.textMuted, fontWeight: "800", fontSize: fonts.size.xs, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 },
+  menuRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radii.md, padding: 14, marginBottom: 8, ...shadow.sm },
+  menuIcon: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center" },
+  menuLabel: { color: colors.text, fontSize: fonts.size.md, fontWeight: "700", flex: 1 },
   versionInfo: { color: colors.textDim, textAlign: "center", marginTop: space.xl, fontSize: fonts.size.xs },
 });
