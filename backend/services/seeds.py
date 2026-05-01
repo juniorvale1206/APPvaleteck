@@ -97,14 +97,31 @@ async def seed_inventory(user_id: str):
     existing = await db.inventory.count_documents({"user_id": user_id})
     if existing > 0:
         return
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    # Para testar logística reversa: 1 já vencido (há 10d em pending_reverse),
+    # 1 dentro do prazo (há 2d), e os demais em outros estados
+    overdue_start = (now - timedelta(days=10)).isoformat()
+    recent_start = (now - timedelta(days=2)).isoformat()
     samples = [
-        {"tipo": "Rastreador", "modelo": "Rastreador GPS XT-2000", "imei": "123456789012345", "iccid": "89550100012345678901", "serie": "SN-X2-001", "empresa": "Rastremix", "status": "with_tech"},
-        {"tipo": "Rastreador", "modelo": "Rastreador GPS Plus", "imei": "234567890123456", "iccid": "89550100012345678902", "serie": "SN-GP-002", "empresa": "Telensat", "status": "with_tech"},
-        {"tipo": "Bloqueador", "modelo": "Bloqueador Veicular V8", "imei": "", "iccid": "", "serie": "SN-V8-003", "empresa": "Valeteck", "status": "with_tech"},
-        {"tipo": "Rastreador", "modelo": "Rastreador Moto MT-100", "imei": "345678901234567", "iccid": "89550100012345678903", "serie": "SN-MT-004", "empresa": "GPS My", "status": "in_transit_to_tech", "tracking_code": "BR123456789BR"},
-        {"tipo": "Rastreador", "modelo": "Rastreador Híbrido GSM/GPS", "imei": "456789012345678", "iccid": "89550100012345678904", "serie": "SN-HY-005", "empresa": "Topy Pro", "status": "installed", "placa": "BRA1A23"},
-        {"tipo": "Bloqueador", "modelo": "Bloqueador Anti-Furto BR-9", "imei": "", "iccid": "", "serie": "SN-BR-006", "empresa": "Rastremix", "status": "pending_reverse", "placa": "DEF1B45"},
+        {"tipo": "Rastreador", "modelo": "Rastreador GPS XT-2000", "imei": "123456789012345", "iccid": "89550100012345678901", "serie": "SN-X2-001", "empresa": "Rastremix", "status": "with_tech",
+         "equipment_category": "rastreador", "equipment_value": 300.00},
+        {"tipo": "Rastreador", "modelo": "Rastreador GPS Plus", "imei": "234567890123456", "iccid": "89550100012345678902", "serie": "SN-GP-002", "empresa": "Telensat", "status": "with_tech",
+         "equipment_category": "rastreador", "equipment_value": 300.00},
+        {"tipo": "Bloqueador", "modelo": "Bloqueador Veicular V8", "imei": "", "iccid": "", "serie": "SN-V8-003", "empresa": "Valeteck", "status": "with_tech",
+         "equipment_category": "bloqueador", "equipment_value": 200.00},
+        {"tipo": "Rastreador", "modelo": "Rastreador Moto MT-100", "imei": "345678901234567", "iccid": "89550100012345678903", "serie": "SN-MT-004", "empresa": "GPS My", "status": "in_transit_to_tech", "tracking_code": "BR123456789BR",
+         "equipment_category": "rastreador", "equipment_value": 300.00},
+        {"tipo": "Rastreador", "modelo": "Rastreador Híbrido GSM/GPS", "imei": "456789012345678", "iccid": "89550100012345678904", "serie": "SN-HY-005", "empresa": "Topy Pro", "status": "installed", "placa": "BRA1A23",
+         "equipment_category": "rastreador", "equipment_value": 300.00},
+        # VENCIDO (há 10 dias em pending_reverse)
+        {"tipo": "Bloqueador", "modelo": "Bloqueador Anti-Furto BR-9", "imei": "", "iccid": "", "serie": "SN-BR-006", "empresa": "Rastremix", "status": "pending_reverse", "placa": "DEF1B45",
+         "equipment_category": "bloqueador", "equipment_value": 200.00,
+         "pending_reverse_at": overdue_start},
+        # NO PRAZO (há 2 dias em pending_reverse)
+        {"tipo": "Rastreador", "modelo": "Rastreador GPS Plus", "imei": "567890123456789", "iccid": "", "serie": "SN-GP-007", "empresa": "Telensat", "status": "pending_reverse", "placa": "JKL3F67",
+         "equipment_category": "rastreador", "equipment_value": 300.00,
+         "pending_reverse_at": recent_start},
     ]
     for s in samples:
         await db.inventory.insert_one({
@@ -113,8 +130,8 @@ async def seed_inventory(user_id: str):
             "checklist_id": None,
             "tracking_code": "",
             "placa": "",
-            "created_at": now,
-            "updated_at": now,
+            "created_at": now_iso,
+            "updated_at": now_iso,
             **s,
         })
     logger.info("Seeded %d inventory items for user %s", len(samples), user_id)

@@ -286,7 +286,7 @@ metadata:
 
 test_plan:
   current_focus:
-    - "axios interceptor com refresh-on-401 e novas chaves de token"
+    - "Fase 1 - Logística Reversa: backend (summary, deadline, transfer com carrier/tracking) + frontend (UI vencidos, modal reversa)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
