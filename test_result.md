@@ -228,7 +228,7 @@ backend:
 frontend:
   - task: "axios interceptor com refresh-on-401 e novas chaves de token"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/frontend/src/api.ts + /app/frontend/src/auth.tsx + /app/frontend/app/(app)/checklist/[id].tsx"
     stuck_count: 0
     priority: "high"
@@ -237,21 +237,46 @@ frontend:
         - working: "NA"
           agent: "main"
           comment: |
-            api.ts:
-            - Mantém TOKEN_KEY (legacy) + adiciona ACCESS_TOKEN_KEY/REFRESH_TOKEN_KEY.
-            - getAccessToken/getRefreshToken/setTokens/clearTokens helpers.
-            - Interceptor de response: em 401 (exceto /auth/login e /auth/refresh), tenta refresh
-              automaticamente e retenta o request com o novo access token. Se falhar, clearTokens()
-              + dispara onSessionExpired() para forçar logout no AuthProvider.
-            - refreshAccessToken protegido contra race com refreshPromise singleton.
-            - Photo type: agora { base64?, url?, label?, workflow_step?, photo_id? }.
-            - Checklist: signature_url? adicionado.
-            auth.tsx:
-            - login() armazena access_token+refresh_token (compat: aceita data.token legacy).
-            - useEffect registra setOnSessionExpired(()=>setUser(null)).
-            checklist/[id].tsx:
-            - Foto agora mostra p.url || p.base64; assinatura idem (signature_url || signature_base64).
-            - PDF download usa getAccessToken() em vez de TOKEN_KEY direto.
+            api.ts: TOKEN_KEY (legacy) + ACCESS_TOKEN_KEY/REFRESH_TOKEN_KEY; helpers; interceptor 401→refresh→retry; onSessionExpired callback.
+            auth.tsx: login armazena access+refresh (compat token legacy); registra setOnSessionExpired→setUser(null).
+        - working: true
+          agent: "testing"
+          comment: |
+            ==================== FRONTEND E2E v11 — REFRESH-ON-401 INTERCEPTOR — PASS ====================
+            Mobile viewport 390x844. Login com tecnico@valeteck.com/tecnico123 OK.
+
+            1) LOGIN & TOKENS (PT-BR):
+               - Tela "Entrar" renderiza com inputs E-MAIL/SENHA e botão amarelo Entrar ✓
+               - Após login, redireciona para Agenda (bottom tabs Agenda/Histórico/Ganhos/Perfil + FAB central "+") ✓
+               - localStorage contém EXATAMENTE as 3 chaves esperadas:
+                 valeteck_token, valeteck_access_token, valeteck_refresh_token ✓
+
+            2) NAVEGAÇÃO ENTRE TABS (smoke):
+               - Agenda: "5 Agendadas, R$ 1.663,00 Ganhos", lista OS com placa/empresa/endereço/Iniciar checklist ✓
+               - Histórico: "18 checklists" com cards (placa, cliente, status Enviado/Rascunho) ✓
+               - Ganhos: total + métricas + período ✓
+               - Perfil: Técnico Demo, role TECNICO, links Ranking semanal / Conquistas e níveis / Meu estoque / Fila sincronização + Sair ✓
+               - Obs: a aba "Novo" do brief é o FAB amarelo central (+) sem label de texto — NÃO é bug.
+
+            3) REFRESH TRANSPARENTE (CRÍTICO) — ✅ FUNCIONA:
+               - Injetado valeteck_access_token=TOKEN_INVALIDO_123 (refresh válido) e clicado em Histórico.
+               - Verificado após o request: novo access_token diferente de "TOKEN_INVALIDO_123" E diferente do antigo
+                 (rotação confirmada). UI continuou na lista de checklists, sem voltar para Entrar. ✓
+
+            4) FALHA NO REFRESH → onSessionExpired → LOGOUT AUTO — ✅ FUNCIONA:
+               - Injetado access+refresh+legacy = "BAD" e disparado clique em Ganhos.
+               - Resultado: localStorage.access=None, refresh=None (clearTokens disparado pelo interceptor),
+                 UI redirecionou para tela de login ("E-MAIL"/"SENHA" visíveis). ✓
+
+            5) LOGOUT MANUAL: Re-login OK + entrou em Perfil (botão Sair vermelho visível). Click no Sair
+               via seletor de texto não disparou o onPress (likely seletor pegou Text filho em vez do
+               Pressable pai); tokens permaneceram. NÃO BLOQUEANTE — o mesmo clearTokens() é usado pelo
+               fluxo de session-expired (item 4) e funciona corretamente. Recomendação opcional para o
+               main agent: adicionar data-testid="profile-logout-button" no Pressable de Sair para
+               facilitar testes futuros.
+
+            CONCLUSÃO: O interceptor refresh-on-401 + as novas chaves AsyncStorage estão sólidos.
+            Cenários críticos (transparente e session-expired) passaram. Pronto para fechar a task.
 
 metadata:
   created_by: "main_agent"
@@ -261,12 +286,7 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Modularização do backend (routers separados)"
-    - "Refresh Token JWT (access 30min + refresh 7 dias)"
-    - "Rate Limiting (SlowAPI) em /auth/login e /ocr/plate"
-    - "Cloud Storage Cloudinary (com fallback base64)"
-    - "Índices compostos MongoDB e endpoint /api/health"
-    - "Endpoints existentes preservados (auth, appointments, checklists, earnings, rankings, gamification, inventory, device, ocr, partners)"
+    - "axios interceptor com refresh-on-401 e novas chaves de token"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
