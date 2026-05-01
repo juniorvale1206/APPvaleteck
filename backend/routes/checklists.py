@@ -265,7 +265,11 @@ async def create_checklist(payload: ChecklistInput, user=Depends(get_current_use
 
 @router.get("/{cid}", response_model=ChecklistOut)
 async def get_checklist(cid: str, user=Depends(get_current_user)):
-    doc = await db.checklists.find_one({"id": cid, "user_id": user["id"]}, {"_id": 0})
+    # Admin pode ver qualquer checklist (para auditoria)
+    if user.get("role") == "admin":
+        doc = await db.checklists.find_one({"id": cid}, {"_id": 0})
+    else:
+        doc = await db.checklists.find_one({"id": cid, "user_id": user["id"]}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Checklist não encontrado")
     return _to_out(doc)
@@ -356,7 +360,11 @@ async def delete_checklist(cid: str, user=Depends(get_current_user)):
 
 @router.get("/{cid}/pdf")
 async def checklist_pdf(cid: str, user=Depends(get_current_user)):
-    doc = await db.checklists.find_one({"id": cid, "user_id": user["id"]}, {"_id": 0})
+    # Admin pode baixar PDF de qualquer técnico (para auditoria)
+    if user.get("role") == "admin":
+        doc = await db.checklists.find_one({"id": cid}, {"_id": 0})
+    else:
+        doc = await db.checklists.find_one({"id": cid, "user_id": user["id"]}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Checklist não encontrado")
     pdf_bytes = render_checklist_pdf(doc)

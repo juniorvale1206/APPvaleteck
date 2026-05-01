@@ -111,13 +111,19 @@ export default function AdminApprovals() {
               <Text style={{ color: colors.textMuted, fontWeight: "700", marginTop: 12 }}>Nenhuma aprovação pendente 🎉</Text>
             </View>
           ) : items.map((p) => (
-            <View key={p.id} style={styles.card} testID={`pending-${p.numero}`}>
+            <TouchableOpacity
+              key={p.id}
+              onPress={() => router.push(`/admin/approval/${p.id}` as any)}
+              style={styles.card}
+              testID={`pending-${p.numero}`}
+            >
               <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
                 <View style={styles.plateBadge}><Text style={styles.plateTxt}>{p.placa}</Text></View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.cardTitle}>{p.numero}</Text>
                   <Text style={styles.cardSub}>{p.empresa} • {p.tipo_atendimento}</Text>
                 </View>
+                <Ionicons name="chevron-forward" size={22} color={colors.textMuted} />
               </View>
               <View style={styles.row}>
                 <Ionicons name="person-outline" size={14} color={colors.textMuted} />
@@ -139,32 +145,11 @@ export default function AdminApprovals() {
                   <Text style={styles.rowTxt}>Execução: {Math.floor((p.execution_elapsed_sec || 0) / 60)} min</Text>
                 </View>
               )}
-
-              <View style={styles.btnRow}>
-                <TouchableOpacity
-                  testID={`approve-${p.numero}`}
-                  onPress={() => approve(p.id, p.numero)}
-                  disabled={acting === p.id}
-                  style={[styles.btn, styles.btnApprove]}
-                >
-                  {acting === p.id ? <ActivityIndicator color="#FFF" /> : (
-                    <>
-                      <Ionicons name="checkmark-circle" size={18} color="#FFF" />
-                      <Text style={styles.btnTxtWhite}>Aprovar e Processar</Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-                <TouchableOpacity
-                  testID={`reject-${p.numero}`}
-                  onPress={() => { setRejectModal(p); setReason(""); }}
-                  disabled={acting === p.id}
-                  style={[styles.btn, styles.btnReject]}
-                >
-                  <Ionicons name="close-circle" size={18} color="#FFF" />
-                  <Text style={styles.btnTxtWhite}>Recusar</Text>
-                </TouchableOpacity>
+              <View style={styles.hintRow}>
+                <Ionicons name="eye-outline" size={14} color={colors.primary} />
+                <Text style={styles.hintTxt}>Toque para revisar detalhes, fotos e assinatura antes de aprovar</Text>
               </View>
-            </View>
+            </TouchableOpacity>
           ))}
         </ScrollView>
       )}
@@ -211,6 +196,8 @@ const styles = StyleSheet.create({
   plateTxt: { color: colors.onPrimary, fontWeight: "900", fontSize: fonts.size.xs, letterSpacing: 1 },
   row: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 },
   rowTxt: { color: colors.textMuted, fontSize: fonts.size.xs },
+  hintRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 10, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.border },
+  hintTxt: { color: colors.primary, fontSize: 11, fontWeight: "700", flex: 1 },
   btnRow: { flexDirection: "row", gap: 8, marginTop: 12 },
   btn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, borderRadius: radii.md },
   btnApprove: { backgroundColor: colors.success },
