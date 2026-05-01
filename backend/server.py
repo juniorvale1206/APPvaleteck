@@ -25,6 +25,7 @@ from services.seeds import seed_appointments, seed_inventory, seed_users
 
 # routes
 from routes import (
+    admin,
     appointments,
     auth,
     checklists,
@@ -70,6 +71,7 @@ api.include_router(closures.router)
 api.include_router(device.router)
 api.include_router(ocr.router)
 api.include_router(partners.router)
+api.include_router(admin.router)
 app.include_router(api)
 
 

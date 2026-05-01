@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 
 from core.database import db
 from core.security import get_current_user
@@ -10,6 +11,7 @@ from models.closure import (
     MonthlyClosureBreakdown, MonthlyClosureIn, MonthlyClosureOut,
 )
 from models.inventory import ReverseOverdueItem
+from services.closure_pdf import render_closure_pdf
 from services.inventory import compute_penalty_total, enrich_reverse_fields
 from services.pricing import base_price, sla_bonus
 
@@ -130,3 +132,32 @@ async def list_closure_history(user=Depends(get_current_user)):
     cursor = db.monthly_closures.find({"user_id": user["id"]}, {"_id": 0}).sort("month", -1)
     docs = await cursor.to_list(length=60)
     return {"closures": docs}
+
+
+@router.get("/pdf")
+async def monthly_closure_pdf(month: Optional[str] = None, user=Depends(get_current_user)):
+    """Gera PDF do fechamento mensal (usa snapshot confirmado se existir,
+    senão gera em tempo real)."""
+    if not month:
+        now = datetime.now(timezone.utc)
+        month = f"{now.year:04d}-{now.month:02d}"
+    _parse_month(month)
+    existing = await db.monthly_closures.find_one(
+        {"user_id": user["id"], "month": month}, {"_id": 0},
+    )
+    if existing:
+        closure_doc = existing
+    else:
+        breakdown = await _compute_breakdown(user["id"], month)
+        closure_doc = {
+            "user_id": user["id"],
+            "month": month,
+            "confirmed_at": None,
+            "breakdown": breakdown.dict(),
+        }
+    pdf_bytes = render_closure_pdf(user, closure_doc)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=fechamento-{month}.pdf"},
+    )

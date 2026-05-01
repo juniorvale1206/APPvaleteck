@@ -7,6 +7,7 @@ import { api, apiErrorMessage } from "../../../src/api";
 import { useAuth } from "../../../src/auth";
 import { useDraft, formatPlate } from "../../../src/draft";
 import { useNotifications } from "../../../src/notifications";
+import OverdueInventoryBanner from "../../../src/OverdueInventoryBanner";
 import { useSync } from "../../../src/sync";
 import { colors, fonts, radii, shadow, space } from "../../../src/theme";
 
@@ -228,6 +229,9 @@ export default function Agenda() {
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}
       >
+        {/* Banner de equipamentos vencidos (Fase 2) */}
+        <OverdueInventoryBanner />
+
         <View style={styles.sectionHeader}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
             <View style={styles.iconSq}><Ionicons name="calendar" size={18} color={colors.primary} /></View>

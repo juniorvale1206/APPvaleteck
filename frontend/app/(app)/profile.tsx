@@ -54,14 +54,18 @@ export default function Profile() {
           <MenuRow testID="menu-ranking" icon="trophy-outline" label="Ranking semanal" color="#F59E0B" onPress={() => router.push("/(app)/ranking")} />
           <MenuRow testID="menu-gamification" icon="ribbon-outline" label="Conquistas e níveis" color="#8B5CF6" onPress={() => router.push("/(app)/gamification")} />
           <MenuRow testID="menu-estoque" icon="cube-outline" label="Meu estoque" color="#3B82F6" onPress={() => router.push("/(app)/estoque")} />
+          <MenuRow testID="menu-fechamento" icon="calendar-outline" label="Fechamento mensal" color="#10B981" onPress={() => router.push("/estoque/fechamento")} />
           <MenuRow testID="menu-sync" icon="sync-outline" label="Fila de sincronização" color="#10B981" onPress={() => router.push("/(app)/sync")} />
+          {user?.role === "admin" && (
+            <MenuRow testID="menu-admin" icon="shield-checkmark-outline" label="Dashboard Admin" color="#EF4444" onPress={() => router.push("/(app)/admin")} />
+          )}
         </View>
 
         <View style={{ marginTop: space.lg }}>
           <Btn testID="logout-btn" title="Sair" icon="log-out-outline" variant="danger" onPress={onLogout} />
         </View>
 
-        <Text style={styles.versionInfo}>Valeteck • v10 — Gamificação avançada</Text>
+        <Text style={styles.versionInfo}>Valeteck • v12 — Logística reversa completa</Text>
       </ScrollView>
     </SafeAreaView>
   );

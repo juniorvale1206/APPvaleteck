@@ -21,6 +21,7 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
   const { user } = useAuth();
   const seen = useRef<Set<string>>(new Set());
   const initialized = useRef(false);
+  const overdueChecked = useRef(false);
   const [newCount, setNewCount] = useState(0);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
@@ -35,31 +36,47 @@ export function NotificationsProvider({ children }: { children: React.ReactNode 
   const poll = useCallback(async () => {
     if (!user) return;
     try {
+      // 1) Novas OS recebidas
       const { data } = await api.get<any[]>("/appointments");
       const ids = new Set(data.map((d) => d.id));
       if (!initialized.current) {
         seen.current = ids;
         initialized.current = true;
-        return;
+      } else {
+        const newOnes = data.filter((d) => !seen.current.has(d.id));
+        if (newOnes.length > 0) {
+          setNewCount((c) => c + newOnes.length);
+          newOnes.forEach((n) =>
+            showToast({
+              title: "🔔 Nova OS recebida",
+              message: `${n.numero_os} • ${n.cliente_nome} ${n.cliente_sobrenome} (${n.placa})`,
+              route: "/(app)/(tabs)/agenda",
+            })
+          );
+        }
+        seen.current = ids;
       }
-      const newOnes = data.filter((d) => !seen.current.has(d.id));
-      if (newOnes.length > 0) {
-        setNewCount((c) => c + newOnes.length);
-        newOnes.forEach((n) =>
-          showToast({
-            title: "🔔 Nova OS recebida",
-            message: `${n.numero_os} • ${n.cliente_nome} ${n.cliente_sobrenome} (${n.placa})`,
-            route: "/(app)/(tabs)/agenda",
-          })
-        );
+      // 2) Equipamentos vencidos (somente técnicos) - 1x por sessão
+      if (user.role === "tecnico" && !overdueChecked.current) {
+        overdueChecked.current = true;
+        try {
+          const { data: sum } = await api.get<any>("/inventory/summary");
+          if (sum?.overdue_count > 0) {
+            showToast({
+              title: "⚠️ Equipamentos vencidos",
+              message: `${sum.overdue_count} item(ns) aguardando devolução — até R$ ${sum.penalty_total.toFixed(2)} em penalidades`,
+              route: "/estoque",
+            });
+          }
+        } catch { /* silencioso */ }
       }
-      seen.current = ids;
     } catch {}
   }, [user, showToast]);
 
   useEffect(() => {
     if (!user) {
       initialized.current = false;
+      overdueChecked.current = false;
       seen.current = new Set();
       setNewCount(0);
       return;

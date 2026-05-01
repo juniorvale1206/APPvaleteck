@@ -1,9 +1,11 @@
 import React, { useCallback, useMemo, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert, RefreshControl } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert, RefreshControl, Platform, Linking } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { api, apiErrorMessage } from "../../../src/api";
+import * as FileSystem from "expo-file-system";
+import * as Sharing from "expo-sharing";
+import { api, apiErrorMessage, getAccessToken } from "../../../src/api";
 import { colors, fonts, radii, shadow, space } from "../../../src/theme";
 
 type OverdueItem = {
@@ -102,6 +104,34 @@ export default function Fechamento() {
   }, []);
 
   const confirmed = !!data?.confirmed_at;
+
+  const downloadPdf = async (ym: string) => {
+    try {
+      const base = process.env.EXPO_PUBLIC_BACKEND_URL;
+      const token = await getAccessToken();
+      const url = `${base}/api/inventory/monthly-closure/pdf?month=${ym}`;
+      if (Platform.OS === "web") {
+        // Abre nova aba (download direto não funciona com Authorization header)
+        // Baixa via fetch + blob URL
+        const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        window.open(blobUrl, "_blank");
+        return;
+      }
+      const fname = `${FileSystem.cacheDirectory}fechamento-${ym}.pdf`;
+      const res = await FileSystem.downloadAsync(url, fname, {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(res.uri, { mimeType: "application/pdf" });
+      } else {
+        Alert.alert("PDF salvo", `Arquivo em ${res.uri}`);
+      }
+    } catch (e) {
+      Alert.alert("Erro", apiErrorMessage(e));
+    }
+  };
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }} edges={["top"]}>
@@ -241,6 +271,18 @@ export default function Fechamento() {
             </TouchableOpacity>
           )}
 
+          {/* Botão baixar PDF */}
+          {data && (
+            <TouchableOpacity
+              testID="download-closure-pdf"
+              onPress={() => downloadPdf(month)}
+              style={styles.pdfBtn}
+            >
+              <Ionicons name="document-text-outline" size={18} color={colors.text} />
+              <Text style={styles.pdfBtnTxt}>Baixar PDF do fechamento</Text>
+            </TouchableOpacity>
+          )}
+
           {confirmed && (
             <View style={styles.confirmedBox}>
               <Ionicons name="checkmark-circle" size={24} color="#166534" />
@@ -281,4 +323,10 @@ const styles = StyleSheet.create({
   confirmTxt: { color: colors.onPrimary, fontWeight: "900", fontSize: fonts.size.md },
   confirmedBox: { flexDirection: "row", alignItems: "center", gap: 10, padding: space.md, backgroundColor: "#DCFCE7", borderRadius: radii.md, borderWidth: 1, borderColor: "#86EFAC" },
   confirmedTxt: { color: "#166534", fontWeight: "800", fontSize: fonts.size.sm, flex: 1 },
+  pdfBtn: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+    paddingVertical: 14, marginTop: space.sm,
+    backgroundColor: colors.surfaceAlt, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border,
+  },
+  pdfBtnTxt: { color: colors.text, fontWeight: "800", fontSize: fonts.size.sm },
 });
