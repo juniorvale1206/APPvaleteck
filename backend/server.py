@@ -607,7 +607,12 @@ async def on_startup():
     await db.checklists.create_index("id", unique=True)
     await db.checklists.create_index([("user_id", 1), ("created_at", -1)])
     await db.checklists.create_index("plate_norm")
+    await db.appointments.create_index("id", unique=True)
+    await db.appointments.create_index([("user_id", 1), ("scheduled_at", 1)])
     await seed_users()
+    tech = await db.users.find_one({"email": os.environ["TECH_EMAIL"].lower()})
+    if tech:
+        await seed_appointments(tech["id"])
     logger.info("Valeteck API ready")
 
 
