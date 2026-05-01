@@ -954,28 +954,262 @@ class DeviceTestOut(BaseModel):
     latency_ms: int
     message: str
     tested_at: str
+    source: str = "mock"
+
+
+# Adapter pattern para integração real com parceiros (Rastremix, Telensat, etc)
+class PartnerAdapter:
+    """Adapter base para integração com sistemas dos parceiros.
+    Implementações concretas devem sobrescrever test_device e fetch_appointments."""
+    name: str = "base"
+
+    async def test_device(self, imei: str) -> Optional[dict]:
+        """Retorna {online, latency_ms, message, tested_at} ou None se não disponível."""
+        return None
+
+    async def sync_appointments(self, user_external_id: str) -> List[dict]:
+        """Retorna lista de OS do parceiro para o técnico — formato compatível com AppointmentOut."""
+        return []
+
+
+class MockRastremixAdapter(PartnerAdapter):
+    """Adapter MOCK para Rastremix. Substituir por implementação real quando
+    documentação/credenciais da Rastremix estiverem disponíveis.
+
+    Exemplo de implementação real esperada:
+        async def test_device(self, imei: str) -> dict:
+            async with httpx.AsyncClient() as c:
+                r = await c.get(
+                    f"{os.environ['RASTREMIX_BASE_URL']}/api/devices/{imei}/status",
+                    headers={"Authorization": f"Bearer {os.environ['RASTREMIX_TOKEN']}"},
+                    timeout=10.0,
+                )
+                data = r.json()
+                return {"online": data["is_online"], "latency_ms": data["last_ping_ms"],
+                        "message": data["status_text"], "tested_at": data["checked_at"]}
+    """
+    name = "rastremix"
+
+    async def test_device(self, imei: str) -> Optional[dict]:
+        import random, hashlib
+        if not (imei.isdigit() and len(imei) == 15):
+            return None
+        seed = int(hashlib.md5((imei + "rastremix").encode()).hexdigest(), 16)
+        random.seed(seed)
+        online = random.random() < 0.95  # Rastremix: 95% taxa
+        latency = random.randint(60, 240) if online else 0
+        return {
+            "online": online,
+            "latency_ms": latency,
+            "message": (f"Dispositivo respondendo via Rastremix — último sinal agora, latência {latency}ms"
+                        if online else "Dispositivo offline — verifique alimentação e sinal GSM"),
+            "tested_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+
+PARTNER_ADAPTERS: dict = {
+    "rastremix": MockRastremixAdapter(),
+}
+
+
+def get_partner_adapter(empresa: str) -> Optional[PartnerAdapter]:
+    return PARTNER_ADAPTERS.get(empresa.lower()) if empresa else None
 
 
 @api.post("/device/test", response_model=DeviceTestOut)
 async def test_device(payload: DeviceTestIn, user=Depends(get_current_user)):
-    """Mock de verificação de comunicação do rastreador pelo IMEI.
-    Retorna online/offline determinístico baseado no IMEI (~90% online) — placeholder
-    para integração futura com API do parceiro (Rastremix/GPS/etc)."""
+    """Teste de comunicação do rastreador pelo IMEI.
+    Se houver adapter real do parceiro associado ao último checklist/agendamento com este IMEI,
+    usa o adapter; caso contrário, usa o mock determinístico.
+    """
     import random, hashlib
     imei = (payload.imei or "").strip()
     if not imei or not imei.isdigit() or len(imei) != 15:
         raise HTTPException(status_code=400, detail="IMEI inválido (15 dígitos)")
-    # Determinístico: hash do IMEI → 90% online
+
+    # Tenta descobrir a empresa associada ao IMEI via último checklist
+    last = await db.checklists.find_one({"imei": imei}, {"_id": 0, "empresa": 1})
+    adapter = get_partner_adapter((last or {}).get("empresa", "")) if last else None
+    if adapter is not None:
+        result = await adapter.test_device(imei)
+        if result is not None:
+            return DeviceTestOut(**result, source=f"partner:{adapter.name}")
+
+    # Fallback: mock determinístico
     seed = int(hashlib.md5(imei.encode()).hexdigest(), 16)
     random.seed(seed)
     online = random.random() < 0.9
     latency = random.randint(80, 380) if online else 0
     now_iso = datetime.now(timezone.utc).isoformat()
-    if online:
-        msg = f"Dispositivo respondendo — último sinal agora, latência {latency}ms"
-    else:
-        msg = "Dispositivo offline — verifique alimentação, antena e conexão GSM"
-    return DeviceTestOut(online=online, latency_ms=latency, message=msg, tested_at=now_iso)
+    msg = (f"Dispositivo respondendo — último sinal agora, latência {latency}ms"
+           if online else "Dispositivo offline — verifique alimentação, antena e conexão GSM")
+    return DeviceTestOut(online=online, latency_ms=latency, message=msg, tested_at=now_iso, source="mock")
+
+
+# ----------------- OCR de Placa via Gemini Vision -----------------
+class PlateOcrIn(BaseModel):
+    base64: str  # data URI or raw base64
+
+
+class PlateOcrOut(BaseModel):
+    plate: Optional[str] = None
+    confidence: float = 0.0
+    raw: str = ""
+    detected: bool = False
+
+
+_PLATE_RE = re.compile(r"\b([A-Z]{3})[-\s]?(\d)([A-Z0-9])(\d{2})\b")
+
+
+def _extract_plate(text: str) -> Optional[str]:
+    m = _PLATE_RE.search(text.upper())
+    if not m:
+        return None
+    return f"{m.group(1)}{m.group(2)}{m.group(3)}{m.group(4)}"
+
+
+@api.post("/ocr/plate", response_model=PlateOcrOut)
+async def ocr_plate(payload: PlateOcrIn, user=Depends(get_current_user)):
+    """Detecta placa brasileira (antiga ou Mercosul) em imagem usando Gemini Vision."""
+    b64 = (payload.base64 or "").strip()
+    if not b64:
+        raise HTTPException(status_code=400, detail="Imagem obrigatória")
+    # Normalize data URI
+    if "," in b64:
+        b64 = b64.split(",", 1)[1]
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+    except ImportError:
+        raise HTTPException(status_code=500, detail="emergentintegrations não instalado")
+
+    api_key = os.environ.get("EMERGENT_LLM_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="EMERGENT_LLM_KEY não configurado")
+
+    session_id = f"ocr-plate-{user['id']}-{uuid.uuid4().hex[:6]}"
+    system = (
+        "You are an OCR expert specializing in Brazilian vehicle license plates. "
+        "Detect the license plate in the image. Brazilian plates follow these formats:\n"
+        "- Old: ABC1234 (3 letters + 4 digits)\n"
+        "- Mercosul: ABC1D23 (3 letters + 1 digit + 1 letter + 2 digits)\n"
+        "Respond ONLY with valid JSON: {\"plate\": \"ABC1D23\" or null, \"confidence\": 0.0-1.0, \"notes\": \"short reason\"}.\n"
+        "If you see NO plate or cannot read it clearly, set plate=null and confidence<=0.3."
+    )
+    chat = LlmChat(api_key=api_key, session_id=session_id, system_message=system)
+    chat.with_model("gemini", "gemini-2.5-flash")
+    image = ImageContent(image_base64=b64)
+    msg = UserMessage(
+        text="Analise a imagem e responda apenas com o JSON com a placa detectada.",
+        file_contents=[image],
+    )
+    try:
+        raw = await chat.send_message(msg)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Gemini Vision falhou: {e}")
+
+    text = str(raw) if raw else ""
+    plate: Optional[str] = None
+    confidence = 0.0
+    # Tenta parsear JSON, caindo pra regex se falhar
+    try:
+        import json, re as _re
+        m = _re.search(r"\{[\s\S]*\}", text)
+        if m:
+            data = json.loads(m.group(0))
+            p = (data.get("plate") or "").upper().replace("-", "").replace(" ", "")
+            if p and _re.match(r"^[A-Z]{3}\d[A-Z0-9]\d{2}$", p):
+                plate = p
+                try:
+                    confidence = float(data.get("confidence", 0.0))
+                except Exception:
+                    confidence = 0.5
+    except Exception:
+        pass
+    # Fallback: regex direto no texto
+    if not plate:
+        found = _extract_plate(text)
+        if found:
+            plate = found
+            confidence = 0.6
+    return PlateOcrOut(plate=plate, confidence=round(confidence, 2), raw=text[:500], detected=plate is not None)
+
+
+# ----------------- Webhook IN para parceiros -----------------
+class PartnerAppointmentWebhook(BaseModel):
+    partner: str            # identifier do parceiro (rastremix, telensat, etc)
+    user_email: str         # e-mail do técnico que recebe a OS
+    numero_os: str
+    cliente_nome: str
+    cliente_sobrenome: str
+    placa: str
+    endereco: str
+    scheduled_at: str
+    telefone: Optional[str] = ""
+    vehicle_type: Optional[str] = "carro"
+    vehicle_brand: Optional[str] = ""
+    vehicle_model: Optional[str] = ""
+    vehicle_year: Optional[str] = ""
+    prioridade: Optional[str] = "normal"
+    tempo_estimado_min: Optional[int] = 60
+    observacoes: Optional[str] = ""
+    comissao: Optional[float] = None
+    secret: Optional[str] = ""
+
+
+PARTNER_WEBHOOK_SECRET = os.environ.get("PARTNER_WEBHOOK_SECRET", "valeteck-partner-dev-secret")
+PARTNER_EMPRESA_MAP = {
+    "rastremix": "Rastremix",
+    "gps_my": "GPS My",
+    "gps_joy": "GPS Joy",
+    "topy_pro": "Topy Pro",
+    "telensat": "Telensat",
+    "valeteck": "Valeteck",
+}
+
+
+@api.post("/partners/webhook/appointments")
+async def partner_webhook_appointments(payload: PartnerAppointmentWebhook):
+    """Endpoint de entrada para parceiros criarem OS no Valeteck.
+    Autenticação via shared-secret no body (ou ?secret=... em produção).
+    Mapeia partner → empresa conhecida e persiste como appointment.
+    """
+    if (payload.secret or "") != PARTNER_WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="secret inválido")
+    partner_key = (payload.partner or "").lower().strip()
+    empresa = PARTNER_EMPRESA_MAP.get(partner_key)
+    if not empresa:
+        raise HTTPException(status_code=400, detail=f"partner desconhecido. Use um de: {list(PARTNER_EMPRESA_MAP.keys())}")
+    user = await db.users.find_one({"email": payload.user_email.lower().strip()})
+    if not user:
+        raise HTTPException(status_code=404, detail="Técnico (user_email) não encontrado")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "numero_os": payload.numero_os,
+        "cliente_nome": payload.cliente_nome,
+        "cliente_sobrenome": payload.cliente_sobrenome,
+        "placa": (payload.placa or "").upper(),
+        "empresa": empresa,
+        "endereco": payload.endereco,
+        "scheduled_at": payload.scheduled_at,
+        "status": "agendado",
+        "checklist_id": None,
+        "vehicle_type": payload.vehicle_type or "carro",
+        "vehicle_brand": payload.vehicle_brand or "",
+        "vehicle_model": payload.vehicle_model or "",
+        "vehicle_year": payload.vehicle_year or "",
+        "prioridade": payload.prioridade or "normal",
+        "telefone": payload.telefone or "",
+        "tempo_estimado_min": payload.tempo_estimado_min or 60,
+        "observacoes": payload.observacoes or "",
+        "comissao": payload.comissao,
+        "partner_origin": partner_key,
+        "created_at": now_iso,
+    }
+    await db.appointments.insert_one(doc)
+    doc.pop("_id", None)
+    return {"ok": True, "appointment_id": doc["id"], "empresa": empresa}
 
 
 # ----------------- Checklists -----------------

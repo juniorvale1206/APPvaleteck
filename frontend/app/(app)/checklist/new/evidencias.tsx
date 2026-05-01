@@ -7,7 +7,8 @@ import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as Location from "expo-location";
 import { Btn, StepProgress } from "../../../../src/components";
-import { useDraft } from "../../../../src/draft";
+import { useDraft, formatPlate, isValidPlate } from "../../../../src/draft";
+import { api, apiErrorMessage } from "../../../../src/api";
 import { SLABadge } from "../../../../src/SLABadge";
 import { colors, fonts, radii, space } from "../../../../src/theme";
 
@@ -70,6 +71,34 @@ export default function StepEvidencias() {
       const base64 = `data:image/jpeg;base64,${m.base64}`;
       const filtered = draft.photos.filter((p) => !(p.workflow_step === step && p.photo_id === photoId));
       set({ photos: [...filtered, { base64, label, workflow_step: step, photo_id: photoId }] });
+
+      // Auto-OCR: fotos dos grupos 1 ("avaria-frontal", "avaria-traseira") e 2 ("equip-placa", "imei-placa") costumam conter a placa
+      const isPlatePhoto = (step === 1 || step === 2) && ["avaria-frontal", "avaria-traseira", "equip-placa", "imei-placa"].includes(photoId);
+      if (isPlatePhoto) {
+        // Run OCR in background; don't block the UI
+        (async () => {
+          try {
+            const { data } = await api.post("/ocr/plate", { base64 });
+            if (data.plate && data.confidence >= 0.5) {
+              const currentNorm = (draft.placa || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+              const detectedNorm = data.plate.toUpperCase();
+              if (!currentNorm) {
+                set({ placa: formatPlate(data.plate) });
+                Alert.alert("✅ Placa detectada", `Placa ${data.plate} foi preenchida automaticamente (confiança ${Math.round(data.confidence * 100)}%).`);
+              } else if (currentNorm !== detectedNorm && isValidPlate(data.plate)) {
+                Alert.alert(
+                  "⚠ Placa diferente detectada",
+                  `Você digitou: ${draft.placa}\nDetectada na foto: ${data.plate}\n\nDeseja atualizar?`,
+                  [
+                    { text: "Manter atual", style: "cancel" },
+                    { text: "Usar detectada", onPress: () => set({ placa: formatPlate(data.plate) }) },
+                  ]
+                );
+              }
+            }
+          } catch { /* silent — OCR é melhoria opcional */ }
+        })();
+      }
     } catch (e: any) { Alert.alert("Erro", e?.message || "Falha"); }
     finally { setBusy(false); }
   };

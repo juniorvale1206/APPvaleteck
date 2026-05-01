@@ -98,6 +98,7 @@ function isMeaningful(d: Draft): boolean {
 export function DraftProvider({ children }: { children: React.ReactNode }) {
   const [draft, setDraft] = useState<Draft>(empty);
   const [hasStored, setHasStored] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const saveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // On mount: check if there's a stored draft (don't auto-apply, just flag)
@@ -105,18 +106,20 @@ export function DraftProvider({ children }: { children: React.ReactNode }) {
     (async () => {
       const stored = await readJson<Draft | null>(KEYS.draftCurrent, null);
       if (stored && isMeaningful(stored)) setHasStored(true);
+      setLoaded(true);
     })();
   }, []);
 
-  // Auto-persist on every change (debounced)
+  // Auto-persist on every change (debounced) — só depois de ter carregado
   useEffect(() => {
+    if (!loaded) return;
     if (saveRef.current) clearTimeout(saveRef.current);
     saveRef.current = setTimeout(() => {
       if (isMeaningful(draft)) writeJson(KEYS.draftCurrent, draft);
       else removeKey(KEYS.draftCurrent);
     }, 400);
     return () => { if (saveRef.current) clearTimeout(saveRef.current); };
-  }, [draft]);
+  }, [draft, loaded]);
 
   const set = useCallback((patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch })), []);
   const reset = useCallback(() => {

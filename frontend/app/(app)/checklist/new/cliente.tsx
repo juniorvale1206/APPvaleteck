@@ -6,6 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Btn, Field, MultiSelect, StepProgress } from "../../../../src/components";
 import { useDraft, isValidPlate, formatPlate } from "../../../../src/draft";
 import { api } from "../../../../src/api";
+import PlateOcrButton from "../../../../src/PlateOcrButton";
 import { colors, fonts, space } from "../../../../src/theme";
 
 export default function StepCliente() {
@@ -42,7 +43,18 @@ export default function StepCliente() {
           <Text style={styles.section}>Dados do cliente</Text>
           <Field testID="cliente-nome" label="Nome" required value={draft.nome} onChangeText={(v) => set({ nome: v })} error={errors.nome} placeholder="João" />
           <Field testID="cliente-sobrenome" label="Sobrenome" required value={draft.sobrenome} onChangeText={(v) => set({ sobrenome: v })} error={errors.sobrenome} placeholder="Silva" />
-          <Field testID="cliente-placa" label="Placa do veículo" required autoCapitalize="characters" value={draft.placa} onChangeText={(v) => set({ placa: formatPlate(v) })} error={errors.placa} placeholder="ABC-1D23" maxLength={8} />
+          <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 10, marginBottom: 0 }}>
+            <View style={{ flex: 1 }}>
+              <Field testID="cliente-placa" label="Placa do veículo" required autoCapitalize="characters" value={draft.placa} onChangeText={(v) => set({ placa: formatPlate(v) })} error={errors.placa} placeholder="ABC-1D23" maxLength={8} />
+            </View>
+            <View style={{ marginBottom: 16 }}>
+              <PlateOcrButton
+                testID="cliente-ocr"
+                label="Escanear"
+                onDetected={(plate) => set({ placa: formatPlate(plate) })}
+              />
+            </View>
+          </View>
           <Field testID="cliente-telefone" label="Telefone" value={draft.telefone} onChangeText={(v) => set({ telefone: v })} keyboardType="phone-pad" placeholder="(11) 99999-9999" />
           <Field testID="cliente-obs" label="Observações iniciais" value={draft.obs_iniciais} onChangeText={(v) => set({ obs_iniciais: v })} placeholder="Opcional" multiline numberOfLines={3} style={{ minHeight: 90, textAlignVertical: "top" } as any} />
 

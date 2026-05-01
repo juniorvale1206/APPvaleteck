@@ -1,0 +1,40 @@
+{
+  "summary": "Valeteck v9 — OCR de placa via Gemini Vision, adapter Rastremix para /device/test e webhook IN de parceiros testados end-to-end. Backend: 14/14 pytest green (incluindo OCR real via emergentintegrations gemini-2.5-flash detectando BRA2E19 com confidence>=0.5 em imagem JPEG sintética, detecção correta de 'sem placa' em imagem neutra, source='mock' quando IMEI desvinculado e source='partner:rastremix' quando último checklist do IMEI é Rastremix, webhook 401/400/200 com mapeamento correto partner→empresa e OS visível via GET /api/appointments). Frontend: Cliente screen renderiza testID 'cliente-placa' e 'cliente-ocr' (mobile 390x844), login + navegação para /checklist/new/cliente funcionando, regressão OK. Nenhum bug novo. 1 item minor herdado (Perfil ainda mostra 'v8 — Offline-first').",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/health", "issue": "não implementado (404) — usar /api/auth/me como health"}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Perfil", "issues": ["versionInfo ainda mostra 'Valeteck • v8 — Offline-first'; atualizar para v9 — OCR de placa / Webhook parceiros"]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_valeteck_v9.py",
+    "/app/test_reports/pytest/v9_results.xml"
+  ],
+  "action_items": [
+    "Atualizar rodapé do Perfil (src versionInfo) para v9 — OCR de placa / Webhook parceiros (minor, não bloqueia).",
+    "Opcional: implementar GET /api/health dedicado (200 ok) para testes e monitoramento.",
+    "Opcional (produção): trocar shared-secret do webhook por HMAC + rotação; implementar MockRastremixAdapter com httpx real."
+  ],
+  "critical_code_review_comments": [
+    "OCR: /api/ocr/plate aceita data-URI ou base64 puro, normaliza corretamente, parseia JSON da resposta Gemini com fallback para regex — robusto. Session-id é único por chamada (good). Errors 502 quando Gemini falha com mensagem clara.",
+    "Adapter pattern: MockRastremixAdapter usa hash determinístico do IMEI — ok para MOCK, mas precisa httpx real em prod (já documentado no docstring da classe).",
+    "Webhook: PARTNER_WEBHOOK_SECRET lido de env com default dev — PROD deve exigir override e rejeitar no startup se não setado. Adicionalmente considerar verificação HMAC sobre o body + timestamp para prevenir replay.",
+    "Webhook mapeia partner → empresa via PARTNER_EMPRESA_MAP; partner 'valeteck' está no map mas técnicos que recebem webhook interno como 'valeteck' podem mascarar problemas — considerar remover 'valeteck' da lista de parceiros externos.",
+    "Pequena inconsistência: /device/test procura último checklist por IMEI mas find_one sem sort — em teoria pega o primeiro inserido, não o último. Usar sort([('created_at',-1)]) para garantir 'último vínculo'."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "14/14 (100%)", "frontend": "cliente-placa + cliente-ocr renderizados e visíveis; login + navegação OK"},
+  "seed_data_creation": "Nenhuma persistente. Testes criam/deletam checklists temporários (TEST_v9) e criam 1 appointment via webhook (TEST_OS_V9_VALID) que fica no banco — considerar cleanup se necessário.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "v9 endpoints: POST /api/ocr/plate (auth, body {base64}), POST /api/device/test agora retorna source='mock' ou 'partner:<name>', POST /api/partners/webhook/appointments (unauth, shared secret no body). PARTNER_WEBHOOK_SECRET default='valeteck-partner-dev-secret'. Gemini Vision funciona com placa Mercosul visível — use PIL para gerar JPEG 640x220 com texto grande 'BRA2E19' (DejaVuSans-Bold 90pt). Frontend testIDs no Cliente: cliente-placa (Field), cliente-ocr (PlateOcrButton wrapper). Na Evidências há ocr-plate-btn também usado auto ao tirar foto dos grupos 1/2. Login: tecnico@valeteck.com / tecnico123. URL: /checklist/new/cliente. Perfil ainda mostra v8.",
+  "rca_of_issue": "N/A — nenhum bug novo encontrado em v9."
+}
