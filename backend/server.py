@@ -411,6 +411,164 @@ async def seed_new_appointment(user=Depends(get_current_user)):
     return doc
 
 
+# ----------------- Pricing / Earnings -----------------
+# Tabela base: valor da comissão do técnico por empresa parceira x tipo de atendimento (BRL)
+PRICE_TABLE: dict = {
+    "Valeteck":  {"Instalação": 120.00, "Manutenção": 80.00, "Retirada": 60.00, "Garantia": 40.00},
+    "Rastremix": {"Instalação": 100.00, "Manutenção": 75.00, "Retirada": 55.00, "Garantia": 35.00},
+    "GPS My":    {"Instalação": 95.00,  "Manutenção": 70.00, "Retirada": 50.00, "Garantia": 30.00},
+    "GPS Joy":   {"Instalação": 90.00,  "Manutenção": 65.00, "Retirada": 50.00, "Garantia": 30.00},
+    "Topy Pro":  {"Instalação": 110.00, "Manutenção": 80.00, "Retirada": 55.00, "Garantia": 35.00},
+    "Telensat":  {"Instalação": 115.00, "Manutenção": 85.00, "Retirada": 60.00, "Garantia": 40.00},
+}
+DEFAULT_PRICE = 80.00
+SLA_FAST_SEC = 30 * 60      # < 30min → bônus de eficiência
+SLA_OK_SEC = 60 * 60        # < 60min → sem bônus (OK)
+SLA_FAST_BONUS_PCT = 0.20   # +20% de bônus se SLA rápido
+SLA_LATE_PENALTY_PCT = 0.00 # MVP não aplica penalty (mantém motivacional)
+
+
+def _base_price(empresa: str, tipo: str) -> float:
+    return PRICE_TABLE.get(empresa, {}).get(tipo, DEFAULT_PRICE)
+
+
+def _sla_bonus(base: float, elapsed_sec: int) -> float:
+    if not elapsed_sec or elapsed_sec <= 0:
+        return 0.0
+    if elapsed_sec < SLA_FAST_SEC:
+        return round(base * SLA_FAST_BONUS_PCT, 2)
+    return 0.0
+
+
+def _period_start(period: str) -> Optional[datetime]:
+    now = datetime.now(timezone.utc)
+    if period == "day":
+        return datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    if period == "week":
+        # Segunda-feira da semana atual
+        monday = now - timedelta(days=now.weekday())
+        return datetime(monday.year, monday.month, monday.day, tzinfo=timezone.utc)
+    if period == "month":
+        return datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    if period == "all":
+        return None
+    return None
+
+
+class EarningJob(BaseModel):
+    id: str
+    numero: str
+    empresa: str
+    tipo_atendimento: Optional[str] = ""
+    nome: str
+    sobrenome: str
+    placa: str
+    base_amount: float
+    bonus_amount: float
+    total_amount: float
+    elapsed_sec: int
+    elapsed_min: int
+    sla_fast: bool
+    sent_at: Optional[str] = None
+    created_at: str
+
+
+class EarningsSummary(BaseModel):
+    period: str
+    total_base: float
+    total_bonus: float
+    total_net: float
+    count: int
+    avg_elapsed_min: int
+    fast_count: int
+    breakdown_by_company: dict
+    breakdown_by_type: dict
+    jobs: List[EarningJob]
+    price_table: dict
+
+
+@api.get("/earnings/price-table")
+async def earnings_price_table():
+    return {"price_table": PRICE_TABLE, "default": DEFAULT_PRICE, "sla_fast_minutes": SLA_FAST_SEC // 60, "sla_fast_bonus_pct": SLA_FAST_BONUS_PCT}
+
+
+@api.get("/earnings/me", response_model=EarningsSummary)
+async def my_earnings(period: str = "month", user=Depends(get_current_user)):
+    if period not in ("day", "week", "month", "all"):
+        raise HTTPException(status_code=400, detail="period inválido (day|week|month|all)")
+    start = _period_start(period)
+
+    # Só OS enviadas/aprovadas/em auditoria/reprovadas contam como serviço realizado
+    query: dict = {
+        "user_id": user["id"],
+        "status": {"$in": ["enviado", "em_auditoria", "aprovado", "reprovado"]},
+    }
+    if start is not None:
+        query["$or"] = [
+            {"sent_at": {"$gte": start.isoformat()}},
+            {"$and": [{"sent_at": {"$in": [None, ""]}}, {"created_at": {"$gte": start.isoformat()}}]},
+        ]
+    cursor = db.checklists.find(query, {"_id": 0}).sort("sent_at", -1)
+    docs = await cursor.to_list(length=2000)
+
+    jobs: List[EarningJob] = []
+    total_base = 0.0
+    total_bonus = 0.0
+    total_elapsed = 0
+    fast_count = 0
+    by_company: dict = {}
+    by_type: dict = {}
+
+    for d in docs:
+        empresa = d.get("empresa", "")
+        tipo = d.get("tipo_atendimento") or "Instalação"
+        base = _base_price(empresa, tipo)
+        elapsed = int(d.get("execution_elapsed_sec") or 0)
+        bonus = _sla_bonus(base, elapsed)
+        net = round(base + bonus, 2)
+        fast = elapsed > 0 and elapsed < SLA_FAST_SEC
+        total_base += base
+        total_bonus += bonus
+        total_elapsed += elapsed
+        if fast:
+            fast_count += 1
+        by_company[empresa] = round(by_company.get(empresa, 0.0) + net, 2)
+        by_type[tipo] = round(by_type.get(tipo, 0.0) + net, 2)
+        jobs.append(EarningJob(
+            id=d["id"],
+            numero=d["numero"],
+            empresa=empresa,
+            tipo_atendimento=tipo,
+            nome=d.get("nome", ""),
+            sobrenome=d.get("sobrenome", ""),
+            placa=d.get("placa", ""),
+            base_amount=round(base, 2),
+            bonus_amount=round(bonus, 2),
+            total_amount=net,
+            elapsed_sec=elapsed,
+            elapsed_min=elapsed // 60,
+            sla_fast=fast,
+            sent_at=d.get("sent_at"),
+            created_at=d.get("created_at"),
+        ))
+
+    count = len(jobs)
+    avg_min = (total_elapsed // count // 60) if count > 0 and total_elapsed > 0 else 0
+    return EarningsSummary(
+        period=period,
+        total_base=round(total_base, 2),
+        total_bonus=round(total_bonus, 2),
+        total_net=round(total_base + total_bonus, 2),
+        count=count,
+        avg_elapsed_min=avg_min,
+        fast_count=fast_count,
+        breakdown_by_company=by_company,
+        breakdown_by_type=by_type,
+        jobs=jobs,
+        price_table=PRICE_TABLE,
+    )
+
+
 # ----------------- Device Test (mock) -----------------
 class DeviceTestIn(BaseModel):
     imei: str

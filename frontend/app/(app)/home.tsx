@@ -88,6 +88,9 @@ export default function Home() {
           <Text style={styles.headerTitle}>Histórico</Text>
         </View>
         <View style={{ flexDirection: "row", gap: 6 }}>
+          <TouchableOpacity testID="earnings-button" onPress={() => router.push("/(app)/earnings")} style={styles.iconBtn}>
+            <Ionicons name="cash-outline" size={26} color={colors.primary} />
+          </TouchableOpacity>
           <TouchableOpacity testID="agenda-button" onPress={() => router.push("/(app)/agenda")} style={styles.iconBtn}>
             <Ionicons name="calendar-outline" size={26} color={colors.primary} />
             {newCount > 0 && (
