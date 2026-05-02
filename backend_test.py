@@ -1,302 +1,429 @@
-"""Backend smoke test — Valeteck v14 Fase 2 do Motor de Comissionamento.
+"""Valeteck v14 — Fase 3A (Anti-fraude SLA server-side) + Fase 3B
+(Motor Financeiro Pós-Aprovação) — Backend smoke test.
 
-Escopo:
-  A) GET /api/statement/me (mês atual) — técnico n1
-  B) GET /api/statement/me (mês atual) — júnior
-  C) GET /api/statement/me?month=2026-04
-  D) GET /api/statement/me?month=invalido
-  E) POST /api/checklists com service_type_code
-  F) POST /api/checklists sem service_type_code (backward compat)
-  G) Regressão leve (/auth/me, /gamification/meta, /gamification/profile,
-     /inventory/me, /reference/service-catalog)
+Base URL: https://installer-track-1.preview.emergentagent.com/api
 """
 import os
-import re
+import json
+import time
 import sys
-from typing import Any
+from datetime import datetime
 
 import requests
 
-BASE_URL = os.environ.get(
-    "BACKEND_BASE_URL",
-    "https://installer-track-1.preview.emergentagent.com/api",
-).rstrip("/")
+# ---- Config ----
+FRONTEND_ENV = "/app/frontend/.env"
+BASE_URL = None
+with open(FRONTEND_ENV) as fh:
+    for line in fh:
+        if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
+            BASE_URL = line.split("=", 1)[1].strip().strip('"') + "/api"
+if not BASE_URL:
+    raise SystemExit("EXPO_PUBLIC_BACKEND_URL ausente em frontend/.env")
+print(f"🔗 Base URL: {BASE_URL}")
 
-TECNICO = ("tecnico@valeteck.com", "tecnico123")
-JUNIOR = ("junior@valeteck.com", "junior123")
-
-STATEMENT_REQUIRED_KEYS = {
-    "month", "level", "total_os", "valid_os", "duplicates",
-    "within_sla", "out_sla", "sla_compliance_pct",
-    "gross_estimated", "penalty_total", "penalty_count",
-    "net_estimated", "meta_target", "meta_reached",
-    "meta_remaining", "by_service",
+USERS = {
+    "admin": ("admin@valeteck.com", "admin123"),
+    "tecnico": ("tecnico@valeteck.com", "tecnico123"),
+    "junior": ("junior@valeteck.com", "junior123"),
+    "n2": ("n2@valeteck.com", "n2tech123"),
 }
 
-results: list[tuple[str, bool, str]] = []
+results = []   # [(nome, ok, info)]
 
 
-def log(name: str, cond: bool, extra: str = "") -> bool:
-    mark = "✅" if cond else "❌"
-    msg = f"{mark} {name}" + (f" — {extra}" if extra else "")
-    print(msg)
-    results.append((name, cond, extra))
-    return cond
+def log(name, ok, info=""):
+    mark = "✅" if ok else "❌"
+    results.append((name, ok, info))
+    print(f"  {mark} {name}" + (f" — {info}" if info else ""))
 
 
-def login(email: str, password: str) -> str:
-    r = requests.post(
-        f"{BASE_URL}/auth/login",
-        json={"email": email, "password": password},
-        timeout=20,
-    )
-    assert r.status_code == 200, f"login {email} falhou: {r.status_code} {r.text[:200]}"
-    data = r.json()
-    token = data.get("access_token") or data.get("token")
-    assert token, f"token ausente para {email}"
-    return token
+def login(email, pwd):
+    r = requests.post(f"{BASE_URL}/auth/login", json={"email": email, "password": pwd}, timeout=20)
+    r.raise_for_status()
+    return r.json()
 
 
-def H(token: str) -> dict:
+def H(token):
     return {"Authorization": f"Bearer {token}"}
 
 
-def run_section_A(token_tec: str):
-    print("\n=== A) GET /statement/me (mês atual) — tecnico (n1) ===")
-    r = requests.get(f"{BASE_URL}/statement/me", headers=H(token_tec), timeout=20)
-    log("A1 HTTP 200", r.status_code == 200, f"status={r.status_code} body={r.text[:300]}")
-    if r.status_code != 200:
-        return None
-    data = r.json()
-    missing = STATEMENT_REQUIRED_KEYS - set(data.keys())
-    log("A2 todas as chaves presentes", not missing,
-        f"faltam={sorted(missing)}" if missing else "OK")
-    log("A3 level == 'n1'", data.get("level") == "n1", f"level={data.get('level')}")
-    log("A4 meta_target == 60", data.get("meta_target") == 60,
-        f"meta_target={data.get('meta_target')}")
-    m = data.get("month", "")
-    log("A5 month formato YYYY-MM", bool(re.fullmatch(r"\d{4}-\d{2}", m)), f"month={m}")
-    log("A6 total_os >= 0", isinstance(data.get("total_os"), int) and data["total_os"] >= 0,
-        f"total_os={data.get('total_os')}")
-    log("A7 by_service é lista", isinstance(data.get("by_service"), list),
-        f"type={type(data.get('by_service')).__name__}")
-    return data
-
-
-def run_section_B():
-    print("\n=== B) GET /statement/me — junior ===")
-    token = login(*JUNIOR)
-    r = requests.get(f"{BASE_URL}/statement/me", headers=H(token), timeout=20)
-    log("B1 HTTP 200", r.status_code == 200, f"status={r.status_code} body={r.text[:200]}")
-    if r.status_code != 200:
-        return
-    data = r.json()
-    log("B2 level == 'junior'", data.get("level") == "junior",
-        f"level={data.get('level')}")
-    log("B3 meta_target == 30", data.get("meta_target") == 30,
-        f"meta_target={data.get('meta_target')}")
-
-
-def run_section_C(token_tec: str):
-    print("\n=== C) GET /statement/me?month=2026-04 ===")
-    r = requests.get(
-        f"{BASE_URL}/statement/me",
-        params={"month": "2026-04"},
-        headers=H(token_tec),
-        timeout=20,
-    )
-    log("C1 HTTP 200 mesmo em mês passado",
-        r.status_code == 200, f"status={r.status_code} body={r.text[:200]}")
-    if r.status_code == 200:
-        data = r.json()
-        log("C2 month == '2026-04'", data.get("month") == "2026-04",
-            f"month={data.get('month')}")
-
-
-def run_section_D(token_tec: str):
-    print("\n=== D) GET /statement/me?month=invalido ===")
-    r = requests.get(
-        f"{BASE_URL}/statement/me",
-        params={"month": "invalido"},
-        headers=H(token_tec),
-        timeout=20,
-    )
-    log("D1 HTTP 400 p/ month inválido", r.status_code == 400,
-        f"status={r.status_code} body={r.text[:200]}")
+# =====================================================================
+# SETUP — login de todos os papéis
+# =====================================================================
+print("\n===== SETUP =====")
+tokens = {}
+ids = {}
+for key, (email, pwd) in USERS.items():
     try:
-        body = r.json()
-        msg = str(body.get("detail", ""))
-        log("D2 mensagem PT-BR com 'month'", "month" in msg.lower() or "invalid" in msg.lower(),
-            f"detail={msg}")
+        data = login(email, pwd)
+        tokens[key] = data["access_token"]
+        ids[key] = data["user"]["id"]
+        log(f"Login {key} ({email})", True,
+            f"level={data['user'].get('level')} id={data['user']['id'][:8]}…")
     except Exception as e:
-        log("D2 resposta JSON", False, str(e))
+        log(f"Login {key} ({email})", False, str(e))
+        sys.exit(1)
+
+admin_tok = tokens["admin"]
+tec_tok = tokens["tecnico"]
+jun_tok = tokens["junior"]
+n2_tok = tokens["n2"]
 
 
-def run_section_E(token_tec: str):
-    print("\n=== E) POST /checklists com service_type_code ===")
+def create_draft(token, plate="AAA0001", tipo="Instalação"):
     payload = {
-        "nome": "Teste",
-        "sobrenome": "SLA",
-        "placa": "TST1234",
-        "telefone": "",
+        "nome": "Cliente",
+        "sobrenome": "Teste",
+        "placa": plate,
         "empresa": "Rastremix",
-        "equipamento": "Rastreador",
-        "tipo_atendimento": "Instalação",
-        "service_type_code": "instalacao_com_bloqueio",
-        "execution_elapsed_sec": 1500,   # 25 min — dentro dos 50 min do SLA
+        "equipamento": "Módulo",
+        "tipo_atendimento": tipo,
         "status": "rascunho",
     }
+    r = requests.post(f"{BASE_URL}/checklists", json=payload, headers=H(token), timeout=20)
+    if r.status_code != 200:
+        raise RuntimeError(f"create_draft HTTP {r.status_code}: {r.text[:300]}")
+    return r.json()
+
+
+# =====================================================================
+# A) Fase 3A — Fluxo completo instalação (tecnico N1)
+# =====================================================================
+print("\n===== A) Fase 3A — Fluxo completo instalação =====")
+try:
+    draft = create_draft(tec_tok, plate="AAA0001", tipo="Instalação")
+    cid_A = draft["id"]
+    log("A1 POST /checklists rascunho", True, f"id={cid_A[:8]}…")
+
     r = requests.post(
-        f"{BASE_URL}/checklists",
-        json=payload,
-        headers=H(token_tec),
-        timeout=20,
+        f"{BASE_URL}/checklists/{cid_A}/send-initial",
+        json={"service_type_code": "instalacao_com_bloqueio"},
+        headers=H(tec_tok), timeout=20,
     )
-    log("E1 POST HTTP 200", r.status_code == 200,
-        f"status={r.status_code} body={r.text[:400]}")
-    if r.status_code != 200:
-        return None
-    data = r.json()
-    cid = data.get("id")
-    log("E2 id retornado", bool(cid), f"id={cid}")
+    ok = r.status_code == 200
+    body = r.json() if ok else {}
+    log("A2 send-initial HTTP 200", ok, f"status={r.status_code}" + (f" body={r.text[:200]}" if not ok else ""))
+    if ok:
+        log("A2.a phase=awaiting_equipment_photo", body.get("phase") == "awaiting_equipment_photo",
+            f"phase={body.get('phase')}")
+        log("A2.b checklist_sent_at preenchido", bool(body.get("checklist_sent_at")),
+            f"sent_at={body.get('checklist_sent_at')}")
+        log("A2.c sla_max_minutes=50", body.get("sla_max_minutes") == 50,
+            f"sla_max={body.get('sla_max_minutes')}")
 
-    # GET confirmando snapshot SLA
-    g = requests.get(f"{BASE_URL}/checklists/{cid}", headers=H(token_tec), timeout=20)
-    log("E3 GET /checklists/{id} HTTP 200", g.status_code == 200,
-        f"status={g.status_code} body={g.text[:200]}")
-    if g.status_code != 200:
-        return cid
-    doc = g.json()
-    log("E4 service_type_code == instalacao_com_bloqueio",
-        doc.get("service_type_code") == "instalacao_com_bloqueio",
-        f"got={doc.get('service_type_code')}")
-    log("E5 service_type_name == 'Instalação C/ Bloqueio'",
-        doc.get("service_type_name") == "Instalação C/ Bloqueio",
-        f"got={doc.get('service_type_name')}")
-    log("E6 sla_max_minutes == 50", doc.get("sla_max_minutes") == 50,
-        f"got={doc.get('sla_max_minutes')}")
-    log("E7 sla_base_value == 5.0", float(doc.get("sla_base_value") or 0) == 5.0,
-        f"got={doc.get('sla_base_value')}")
-    log("E8 sla_within == true", doc.get("sla_within") is True,
-        f"got={doc.get('sla_within')}")
-    return cid
-
-
-def run_section_F(token_tec: str):
-    print("\n=== F) POST /checklists SEM service_type_code (backward compat) ===")
-    payload = {
-        "nome": "Legado",
-        "sobrenome": "Sem SLA",
-        "placa": "LEG5678",
-        "empresa": "Rastremix",
-        "equipamento": "Rastreador",
-        "tipo_atendimento": "Instalação",
-        "status": "rascunho",
-    }
-    r = requests.post(f"{BASE_URL}/checklists", json=payload, headers=H(token_tec), timeout=20)
-    log("F1 POST HTTP 200 sem service_type_code",
-        r.status_code == 200, f"status={r.status_code} body={r.text[:400]}")
-    if r.status_code != 200:
-        return
-    data = r.json()
-    log("F2 service_type_code defaults '' ",
-        (data.get("service_type_code") or "") == "",
-        f"got={data.get('service_type_code')!r}")
-    log("F3 service_type_name defaults '' ",
-        (data.get("service_type_name") or "") == "",
-        f"got={data.get('service_type_name')!r}")
-    log("F4 sla_max_minutes defaults 0",
-        (data.get("sla_max_minutes") or 0) == 0,
-        f"got={data.get('sla_max_minutes')!r}")
-    log("F5 sla_base_value defaults 0.0",
-        float(data.get("sla_base_value") or 0.0) == 0.0,
-        f"got={data.get('sla_base_value')!r}")
-    log("F6 sla_within defaults None/null",
-        data.get("sla_within") is None,
-        f"got={data.get('sla_within')!r}")
-
-
-def run_section_G(token_tec: str):
-    print("\n=== G) Regressão leve ===")
-    ep = [
-        ("/auth/me", {}, 200),
-        ("/gamification/meta", {}, 200),
-        ("/gamification/profile", {}, 200),
-        ("/inventory/me", {}, 200),
-        ("/reference/service-catalog", {}, 200),
-    ]
-    for path, params, expected in ep:
-        r = requests.get(
-            f"{BASE_URL}{path}", params=params, headers=H(token_tec), timeout=20
-        )
-        log(f"G {path}", r.status_code == expected,
-            f"status={r.status_code}")
-        if path == "/auth/me" and r.status_code == 200:
-            me = r.json()
-            log("G /auth/me.level presente", "level" in me,
-                f"keys={sorted(me.keys())[:8]}")
-            log("G /auth/me.tutor_id presente (pode ser null)",
-                "tutor_id" in me, f"tutor_id={me.get('tutor_id')!r}")
-
-    def _items(resp):
-        data = resp.json()
-        if isinstance(data, dict):
-            return data.get("items", data.get("catalog", []))
-        return data if isinstance(data, list) else []
-
-    # catalog counts
-    r = requests.get(f"{BASE_URL}/reference/service-catalog",
-                     headers=H(token_tec), timeout=20)
-    if r.status_code == 200:
-        items = _items(r)
-        log("G catalog default == 11 itens",
-            len(items) == 11, f"len={len(items)}")
-
-    r = requests.get(
-        f"{BASE_URL}/reference/service-catalog",
-        params={"level": "junior"},
-        headers=H(token_tec), timeout=20,
+    r = requests.post(
+        f"{BASE_URL}/checklists/{cid_A}/equipment-photo",
+        json={"photo_base64": "data:image/png;base64,iVBORw0KGgo="},
+        headers=H(tec_tok), timeout=20,
     )
-    log("G catalog?level=junior HTTP 200", r.status_code == 200,
+    ok = r.status_code == 200
+    body = r.json() if ok else {}
+    log("A3 equipment-photo HTTP 200", ok, f"status={r.status_code}" + (f" body={r.text[:200]}" if not ok else ""))
+    if ok:
+        log("A3.a phase=in_execution", body.get("phase") == "in_execution", f"phase={body.get('phase')}")
+        delay = body.get("equipment_photo_delay_sec")
+        log("A3.b equipment_photo_delay_sec int >=0",
+            isinstance(delay, int) and delay >= 0, f"delay={delay}")
+        log("A3.c equipment_photo_flag=false (foto rápida)",
+            body.get("equipment_photo_flag") is False, f"flag={body.get('equipment_photo_flag')}")
+
+    r = requests.post(
+        f"{BASE_URL}/checklists/{cid_A}/finalize",
+        headers=H(tec_tok), timeout=20,
+    )
+    ok = r.status_code == 200
+    body = r.json() if ok else {}
+    log("A4 finalize HTTP 200", ok, f"status={r.status_code}" + (f" body={r.text[:200]}" if not ok else ""))
+    if ok:
+        log("A4.a phase=finalized", body.get("phase") == "finalized", f"phase={body.get('phase')}")
+        total_sec = body.get("sla_total_sec")
+        log("A4.b sla_total_sec int", isinstance(total_sec, int), f"sla_total_sec={total_sec}")
+        log("A4.c sla_within=true (<50min)", body.get("sla_within") is True,
+            f"sla_within={body.get('sla_within')}")
+except Exception as e:
+    log("A (fluxo)", False, str(e))
+
+
+# =====================================================================
+# B) Fase 3A — Regras de erro
+# =====================================================================
+print("\n===== B) Fase 3A — Regras de erro =====")
+
+# B1) service_type_code inválido → 400
+try:
+    d = create_draft(tec_tok, plate="BBB0001")
+    r = requests.post(
+        f"{BASE_URL}/checklists/{d['id']}/send-initial",
+        json={"service_type_code": "inexistente"}, headers=H(tec_tok), timeout=20,
+    )
+    log("B1 service_type_code inválido → 400", r.status_code == 400,
+        f"got={r.status_code} {r.text[:160]}")
+except Exception as e:
+    log("B1", False, str(e))
+
+# B2) N1 tentando acessório → 403
+try:
+    d = create_draft(tec_tok, plate="CCC0001")
+    r = requests.post(
+        f"{BASE_URL}/checklists/{d['id']}/send-initial",
+        json={"service_type_code": "acessorio_smart_control"},
+        headers=H(tec_tok), timeout=20,
+    )
+    ok_code = r.status_code == 403
+    msg_ok = "N2" in (r.text or "")
+    log("B2 N1 acessório → 403", ok_code,
+        f"got={r.status_code} body={r.text[:180]}")
+    log("B2.a mensagem cita N2", msg_ok, f"body={r.text[:160]}")
+except Exception as e:
+    log("B2", False, str(e))
+
+# B3) Re-iniciar checklist já iniciado → 409
+try:
+    d = create_draft(tec_tok, plate="DDD0001")
+    r1 = requests.post(
+        f"{BASE_URL}/checklists/{d['id']}/send-initial",
+        json={"service_type_code": "desinstalacao"}, headers=H(tec_tok), timeout=20,
+    )
+    log("B3.setup primeiro send-initial", r1.status_code == 200, f"got={r1.status_code}")
+    r2 = requests.post(
+        f"{BASE_URL}/checklists/{d['id']}/send-initial",
+        json={"service_type_code": "desinstalacao"}, headers=H(tec_tok), timeout=20,
+    )
+    log("B3 re-iniciar → 409", r2.status_code == 409,
+        f"got={r2.status_code} body={r2.text[:180]}")
+except Exception as e:
+    log("B3", False, str(e))
+
+# B4) finalize sem send-initial → 409
+try:
+    d = create_draft(tec_tok, plate="EEE0001")
+    r = requests.post(f"{BASE_URL}/checklists/{d['id']}/finalize", headers=H(tec_tok), timeout=20)
+    log("B4 finalize sem send-initial → 409", r.status_code == 409,
+        f"got={r.status_code} body={r.text[:180]}")
+except Exception as e:
+    log("B4", False, str(e))
+
+# B5) equipment-photo sem send-initial → 409
+try:
+    d = create_draft(tec_tok, plate="FFF0001")
+    r = requests.post(
+        f"{BASE_URL}/checklists/{d['id']}/equipment-photo",
+        json={"photo_base64": "data:image/png;base64,iVBORw0KGgo="},
+        headers=H(tec_tok), timeout=20,
+    )
+    log("B5 equipment-photo sem send-initial → 409", r.status_code == 409,
+        f"got={r.status_code} body={r.text[:180]}")
+except Exception as e:
+    log("B5", False, str(e))
+
+
+# =====================================================================
+# C) Fase 3A — Categoria não-instalação: desinstalacao
+# =====================================================================
+print("\n===== C) Fase 3A — Desinstalação direto em in_execution =====")
+try:
+    d = create_draft(tec_tok, plate="GGG0001", tipo="Desinstalação")
+    r = requests.post(
+        f"{BASE_URL}/checklists/{d['id']}/send-initial",
+        json={"service_type_code": "desinstalacao"},
+        headers=H(tec_tok), timeout=20,
+    )
+    ok = r.status_code == 200
+    body = r.json() if ok else {}
+    log("C1 send-initial desinstalacao HTTP 200", ok, f"status={r.status_code}")
+    if ok:
+        log("C2 phase=in_execution direto",
+            body.get("phase") == "in_execution",
+            f"phase={body.get('phase')}")
+except Exception as e:
+    log("C", False, str(e))
+
+
+# =====================================================================
+# D) Fase 3A — N2 + acessório (categoria acessorio NÃO ∈ INSTALL_CATEGORIES)
+# =====================================================================
+print("\n===== D) Fase 3A — N2 + acessorio_smart_control → in_execution direto =====")
+try:
+    d = create_draft(n2_tok, plate="HHH0001", tipo="Acessório")
+    r = requests.post(
+        f"{BASE_URL}/checklists/{d['id']}/send-initial",
+        json={"service_type_code": "acessorio_smart_control"},
+        headers=H(n2_tok), timeout=20,
+    )
+    ok = r.status_code == 200
+    body = r.json() if ok else {}
+    log("D1 send-initial acessorio (n2) HTTP 200", ok,
+        f"status={r.status_code} body={r.text[:200]}")
+    if ok:
+        # categoria 'acessorio' não está em {instalacao, telemetria} → phase=in_execution direto
+        log("D2 phase=in_execution direto (acessório ∉ INSTALL_CATEGORIES)",
+            body.get("phase") == "in_execution",
+            f"phase={body.get('phase')}")
+except Exception as e:
+    log("D", False, str(e))
+
+
+# =====================================================================
+# E) Fase 3B — Motor Financeiro via /admin/approve
+# =====================================================================
+print("\n===== E) Fase 3B — Motor Financeiro /admin/approve =====")
+
+try:
+    r = requests.get(f"{BASE_URL}/admin/pending-approvals", headers=H(admin_tok), timeout=20)
+    ok = r.status_code == 200
+    body = r.json() if ok else {}
+    pending = body.get("pending", [])
+    log("E1 GET /admin/pending-approvals", ok, f"count={len(pending)}")
+
+    if not pending:
+        log("E2 Aprovar OS do pool",
+            True, "⚠️ observação: pool vazio — nada a aprovar")
+    else:
+        expected_keys = [
+            "comp_base_value", "comp_sla_cut", "comp_warranty_zero",
+            "comp_return_flagged", "comp_final_value",
+            "comp_penalty_on_original", "comp_level_applied",
+        ]
+        to_test = pending[:2]
+        approved_any = False
+        for idx, item in enumerate(to_test):
+            cid = item["id"]
+            try:
+                r2 = requests.post(
+                    f"{BASE_URL}/admin/checklists/{cid}/approve",
+                    headers=H(admin_tok), timeout=30,
+                )
+                ok2 = r2.status_code == 200
+                body2 = r2.json() if ok2 else {}
+                log(f"E2.{idx+1} approve {cid[:8]}… HTTP 200", ok2,
+                    f"status={r2.status_code}" + (f" body={r2.text[:260]}" if not ok2 else ""))
+                if ok2:
+                    approved_any = True
+                    comp = body2.get("compensation") or {}
+                    missing = [k for k in expected_keys if k not in comp]
+                    log(f"E2.{idx+1}.a compensation contém todas as chaves", not missing,
+                        f"missing={missing} got={list(comp.keys())}")
+                    msg = body2.get("message", "")
+                    log(f"E2.{idx+1}.b message contém 💰",
+                        "💰" in msg,
+                        f"message={msg!r}")
+                    final_v = comp.get("comp_final_value")
+                    ok_val = False
+                    if isinstance(final_v, (int, float)):
+                        ok_val = f"{final_v:.2f}" in msg
+                    log(f"E2.{idx+1}.c mensagem cita valor final",
+                        ok_val,
+                        f"final_v={final_v} msg={msg!r}")
+            except Exception as e:
+                log(f"E2.{idx+1} approve", False, str(e))
+
+        if not approved_any:
+            log("E3 Pelo menos 1 aprovação concluída", False,
+                "Nenhuma aprovação teve sucesso — ver logs acima")
+except Exception as e:
+    log("E", False, str(e))
+
+
+# =====================================================================
+# F) Fase 3B — Extrato /statement/me com penalties
+# =====================================================================
+print("\n===== F) Fase 3B — /statement/me agregado =====")
+try:
+    r = requests.get(f"{BASE_URL}/statement/me", headers=H(tec_tok), timeout=20)
+    ok = r.status_code == 200
+    body = r.json() if ok else {}
+    log("F1 GET /statement/me", ok, f"status={r.status_code}")
+    if ok:
+        required = ["gross_estimated", "penalty_total", "penalty_count", "net_estimated"]
+        missing = [k for k in required if k not in body]
+        log("F2 chaves obrigatórias presentes", not missing,
+            f"missing={missing} has={[k for k in required if k in body]}")
+
+        log("F3 gross_estimated é float",
+            isinstance(body.get("gross_estimated"), (int, float)),
+            f"type={type(body.get('gross_estimated')).__name__} v={body.get('gross_estimated')}")
+        log("F4 penalty_total é float",
+            isinstance(body.get("penalty_total"), (int, float)),
+            f"type={type(body.get('penalty_total')).__name__} v={body.get('penalty_total')}")
+        log("F5 penalty_count é int",
+            isinstance(body.get("penalty_count"), int),
+            f"type={type(body.get('penalty_count')).__name__} v={body.get('penalty_count')}")
+
+        gross = float(body.get("gross_estimated", 0))
+        pen = float(body.get("penalty_total", 0))
+        net = float(body.get("net_estimated", 0))
+        expected_net = round(gross - pen, 2)
+        log("F6 net_estimated == gross - penalty_total",
+            abs(net - expected_net) < 0.02,
+            f"gross={gross} penalty={pen} net={net} expected={expected_net}")
+except Exception as e:
+    log("F", False, str(e))
+
+
+# =====================================================================
+# G) Regressão
+# =====================================================================
+print("\n===== G) Regressão =====")
+
+try:
+    r = requests.get(f"{BASE_URL}/auth/me", headers=H(tec_tok), timeout=20)
+    ok = r.status_code == 200
+    body = r.json() if ok else {}
+    log("G1 GET /auth/me 200", ok, f"status={r.status_code}")
+    if ok:
+        log("G1.a inclui level", "level" in body, f"level={body.get('level')}")
+        log("G1.b inclui tutor_id", "tutor_id" in body, f"tutor_id={body.get('tutor_id')}")
+except Exception as e:
+    log("G1", False, str(e))
+
+try:
+    r = requests.get(f"{BASE_URL}/gamification/meta", headers=H(tec_tok), timeout=20)
+    log("G2 GET /gamification/meta 200", r.status_code == 200,
         f"status={r.status_code}")
-    if r.status_code == 200:
-        items = _items(r)
-        log("G catalog?level=junior == 9 itens",
-            len(items) == 9, f"len={len(items)}")
+except Exception as e:
+    log("G2", False, str(e))
+
+try:
+    r = requests.get(f"{BASE_URL}/reference/service-catalog", headers=H(tec_tok), timeout=20)
+    ok = r.status_code == 200
+    body = r.json() if ok else {}
+    if isinstance(body, list):
+        items = body
+    else:
+        items = body.get("items", [])
+    log("G3 GET /reference/service-catalog 200", ok, f"status={r.status_code}")
+    log("G3.a 11 items", len(items) == 11, f"count={len(items)}")
+except Exception as e:
+    log("G3", False, str(e))
+
+try:
+    r = requests.get(f"{BASE_URL}/reference/service-catalog?level=n1", headers=H(tec_tok), timeout=20)
+    ok = r.status_code == 200
+    body = r.json() if ok else {}
+    if isinstance(body, list):
+        items = body
+    else:
+        items = body.get("items", [])
+    log("G4 GET /reference/service-catalog?level=n1 200", ok, f"status={r.status_code}")
+    log("G4.a 9 items (sem acessórios)", len(items) == 9, f"count={len(items)}")
+    has_acess = any(it.get("category") == "acessorio" for it in items)
+    log("G4.b nenhum item com category=acessorio", not has_acess, f"has_acessorio={has_acess}")
+except Exception as e:
+    log("G4", False, str(e))
 
 
-def main() -> int:
-    print(f"BASE_URL = {BASE_URL}")
-    print("Logging in as tecnico…")
-    token_tec = login(*TECNICO)
-
-    # A: mês atual tecnico
-    run_section_A(token_tec)
-    # B: junior
-    run_section_B()
-    # C: mês específico
-    run_section_C(token_tec)
-    # D: mês inválido
-    run_section_D(token_tec)
-    # E: POST checklists com service_type_code
-    run_section_E(token_tec)
-    # F: POST checklists sem service_type_code
-    run_section_F(token_tec)
-    # G: regressão leve
-    run_section_G(token_tec)
-
-    print("\n=== RESULT SUMMARY ===")
-    ok = sum(1 for _, c, _ in results if c)
-    total = len(results)
-    print(f"PASS: {ok}/{total}")
-    failures = [(n, e) for n, c, e in results if not c]
-    if failures:
-        print("\nFAILURES:")
-        for name, extra in failures:
-            print(f"  - {name}: {extra}")
-        return 1
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+# =====================================================================
+# SUMMARY
+# =====================================================================
+print("\n" + "=" * 70)
+passed = sum(1 for _, ok, _ in results if ok)
+failed = sum(1 for _, ok, _ in results if not ok)
+print(f"RESULTADO: {passed}/{len(results)} PASS  |  {failed} FALHAS")
+if failed:
+    print("\n❌ FALHAS:")
+    for n, ok, info in results:
+        if not ok:
+            print(f"  - {n}: {info}")
+print("=" * 70)
+sys.exit(0 if failed == 0 else 1)

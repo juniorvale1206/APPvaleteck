@@ -589,10 +589,106 @@ backend:
             snapshot SLA no checklist) está 100% operacional. Nenhuma
             regressão identificada nos endpoints pré-existentes.
 
+backend:
+  - task: "v14 Fase 3A — Anti-fraude SLA server-side (send-initial, equipment-photo, finalize)"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/checklists.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            ==================== v14 FASE 3A — FULL PASS ====================
+            Suite /app/backend_test.py contra
+            https://installer-track-1.preview.emergentagent.com/api
+            Resultado: 52/52 PASS, 0 falhas.
+
+            A) Fluxo completo instalação (tecnico N1):
+               - POST /checklists rascunho OK.
+               - send-initial com service_type_code=instalacao_com_bloqueio → HTTP 200,
+                 phase=awaiting_equipment_photo, checklist_sent_at preenchido
+                 (2026-05-02T03:07:06+00:00), sla_max_minutes=50. ✓
+               - equipment-photo (data:image/png;base64,iVBORw0KGgo=) → HTTP 200,
+                 phase=in_execution, equipment_photo_delay_sec=0, flag=False. ✓
+               - finalize → HTTP 200, phase=finalized, sla_total_sec int,
+                 sla_within=true. ✓
+
+            B) Regras de erro (todas passaram):
+               - B1 service_type_code=inexistente → 400 "service_type_code inválido" ✓
+               - B2 acessorio_smart_control com token N1 → 403
+                 "Serviço restrito a nível N2" ✓
+               - B3 send-initial duplo → 409 "Checklist já iniciado (phase=in_execution)" ✓
+               - B4 finalize sem send-initial → 409 "Cronômetro nunca foi iniciado" ✓
+               - B5 equipment-photo sem send-initial → 409
+                 "Checklist inicial não foi enviado ainda" ✓
+
+            C) Desinstalação (categoria desinstalacao ∉ INSTALL_CATEGORIES):
+               - send-initial com desinstalacao → phase=in_execution direto
+                 (pula awaiting_equipment_photo). ✓
+
+            D) N2 + acessorio_smart_control:
+               - N2 token + acessorio_smart_control → HTTP 200, phase=in_execution
+                 direto (categoria acessorio ∉ {instalacao, telemetria}). ✓
+
+  - task: "v14 Fase 3B — Motor Financeiro Pós-Aprovação (compute_and_persist_compensation)"
+    implemented: true
+    working: true
+    file: "/app/backend/services/compensation.py + /app/backend/routes/admin.py + /app/backend/routes/statement.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            ==================== v14 FASE 3B — FULL PASS ====================
+
+            E) POST /admin/checklists/{id}/approve:
+               - GET /admin/pending-approvals: 21 OSs pendentes ✓
+               - Aprovou 2 OSs diferentes — ambas HTTP 200:
+                 1ª) comp_final_value=R$ 5.00, SLA dentro, message=
+                     "💰 Valor final creditado: R$ 5.00."
+                 2ª) SLA extrapolado (comp_sla_cut=true) → 50% cortado →
+                     comp_final_value=R$ 2.50, message=
+                     "⏱️ SLA extrapolado — valor cortado em 50%. 💰 Valor final
+                     creditado: R$ 2.50."
+               - Resposta contém `compensation` com TODAS as chaves esperadas +
+                 extras:
+                   comp_base_value, comp_sla_cut, comp_warranty_zero,
+                   comp_return_flagged, comp_final_value, comp_penalty_on_original,
+                   comp_previous_os_id, comp_previous_user_id, comp_level_applied,
+                   comp_elapsed_min, comp_max_minutes, comp_computed_at ✓
+               - `message` contém emoji 💰 e valor final formatado em R$ ✓
+
+            F) GET /statement/me (tecnico):
+               - HTTP 200 ✓
+               - Chaves obrigatórias presentes: gross_estimated (float 12.5),
+                 penalty_total (float 1430.0), penalty_count (int 5),
+                 net_estimated (float -1417.5) ✓
+               - Invariante net_estimated == round(gross - penalty, 2) ✓
+                 (gross 12.5 - penalty 1430.0 = -1417.5)
+               - penalty_total > 0 indica que inventário atrasado + eventuais
+                 retornos 30d estão sendo somados.
+
+            G) Regressão: /auth/me (level+tutor_id), /gamification/meta,
+               /reference/service-catalog (11 items; level=n1 → 9 items sem
+               acessórios) — todos OK. ✓
+
+            Observação NÃO-bloqueante (fora do escopo do review):
+            - Durante os testes, observei no backend.err.log que
+              GET /api/earnings/me retorna 500 com KeyError: 'numero' em
+              routes/earnings.py linha 68. Isso NÃO afeta os endpoints do
+              Motor 3A/3B validados neste teste. Reportado ao main agent
+              para diagnóstico separado (pode ser docs legados sem campo
+              numero ou alguma mudança de schema recente).
+
 metadata:
   created_by: "main_agent"
-  version: "2.4"
-  test_sequence: 15
+  version: "2.5"
+  test_sequence: 16
   run_ui: false
 
 test_plan:
@@ -871,6 +967,47 @@ agent_communication:
         CONCLUSÃO: Frontend v13 (Motor de Regras Pós-Aprovação + Card Meta Mensal)
         está 100% funcional. Todos os testIDs esperados (meta-card, pending-*,
         footer-approve, footer-reject) presentes. Pronto para produção.
+
+    - agent: "testing"
+      message: |
+        ==================== v14 FASE 3A + 3B — FULL PASS (52/52) ====================
+        Suite /app/backend_test.py contra
+        https://installer-track-1.preview.emergentagent.com/api
+
+        Fase 3A (Anti-fraude SLA server-side): fluxo completo instalação
+        OK (send-initial→equipment-photo→finalize); desinstalação pula
+        para in_execution direto; N2+acessório idem (categoria acessorio
+        ∉ INSTALL_CATEGORIES); todos os 5 erros esperados retornaram o
+        status code correto (400 inválido, 403 N2-only, 409 duplo/
+        finalize-sem-start/photo-sem-start).
+
+        Fase 3B (Motor Financeiro Pós-Aprovação): /admin/approve agora
+        retorna campo `compensation` com TODAS as 7 chaves do brief
+        (comp_base_value, comp_sla_cut, comp_warranty_zero,
+        comp_return_flagged, comp_final_value, comp_penalty_on_original,
+        comp_level_applied) + 5 extras. Mensagem contém 💰 e valor
+        formatado. Testado 2 aprovações: 1 dentro SLA (R$ 5.00) + 1
+        fora (comp_sla_cut=true, corte 50% → R$ 2.50).
+
+        /statement/me agrega corretamente: gross_estimated(float),
+        penalty_total(float, inclui inventário+retornos 30d),
+        penalty_count(int), net_estimated = gross - penalty (invariante
+        verificado: 12.5 - 1430.0 = -1417.5).
+
+        Regressão: /auth/me (level+tutor_id), /gamification/meta,
+        /reference/service-catalog (11), ?level=n1 (9 sem acessórios) —
+        todos OK.
+
+        🚨 BUG NÃO-RELACIONADO AO REVIEW (observado nos logs):
+        /api/earnings/me está retornando 500 em todos os periods (day,
+        week, month, all) com:
+            File "/app/backend/routes/earnings.py", line 68
+            numero=d["numero"]
+            KeyError: 'numero'
+        É um doc legado no DB sem o campo `numero`. Não afeta Fase 3A/3B
+        (o motor financeiro usa /statement/me, não /earnings/me). Main
+        agent: considerar hardening em routes/earnings.py linha 68 com
+        d.get("numero", "") ou migração de dados.
 
     - agent: "testing"
       message: |
