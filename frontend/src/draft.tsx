@@ -35,7 +35,9 @@ export type Draft = {
   execution_ended_at: string;
   execution_elapsed_sec: number;
   // v14 — Motor de Comissionamento
-  service_type_code: string;        // código da tabela oficial (desinstalacao, instalacao_com_bloqueio, etc.)
+  service_type_code: string;
+  // v14 Fase 3C — Check-in/out do painel (base64)
+  dashboard_photo_in_base64: string;
   photos: Photo[];
   location: { lat: number; lng: number } | null;
   location_available: boolean;
@@ -79,6 +81,7 @@ const empty: Draft = {
   execution_ended_at: "",
   execution_elapsed_sec: 0,
   service_type_code: "",
+  dashboard_photo_in_base64: "",
   photos: [],
   location: null,
   location_available: false,

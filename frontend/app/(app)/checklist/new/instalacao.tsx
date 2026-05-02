@@ -107,9 +107,15 @@ export default function StepInstalacao() {
         photos: [],
       };
       const { data: created } = await api.post<any>("/checklists", base);
-      // 2) Inicia o SLA server-side
+      if (!draft.dashboard_photo_in_base64) {
+        Alert.alert("Foto do painel ausente", "Volte e tire a foto no Check-in do veículo.");
+        router.push("/(app)/checklist/new/checkin");
+        return;
+      }
+      // 2) Inicia o SLA server-side (Gemini Vision valida a foto)
       await api.post(`/checklists/${created.id}/send-initial`, {
         service_type_code: draft.service_type_code,
+        dashboard_photo_base64: draft.dashboard_photo_in_base64,
       });
       // 3) Vai para tela de execução
       router.replace({ pathname: "/(app)/checklist/execucao/[id]", params: { id: created.id } });

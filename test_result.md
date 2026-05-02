@@ -754,10 +754,72 @@ backend:
             corretamente. Cálculos de júnior/N1/N2/N3 + guilhotina batem com
             a especificação. PDF gera sem crash. Nenhuma regressão observada.
 
+backend:
+  - task: "v14 Fase 3C — Check-in/Check-out do Painel (IA Vision Gemini 2.5 Flash)"
+    implemented: true
+    working: true
+    file: "/app/backend/services/vision.py + /app/backend/routes/checklists.py + /app/backend/models/checklist.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            ==================== v14 FASE 3C — CHECK-IN/OUT IA VISION — FULL PASS ====================
+            Suite /app/backend_test.py contra
+            https://installer-track-1.preview.emergentagent.com/api
+            Resultado: 16/16 PASS, 0 falhas.
+
+            A) POST /checklists/{id}/send-initial SEM dashboard_photo_base64:
+               - draft criado OK (status=rascunho, placa=TST0001).
+               - send-initial só com {"service_type_code":"instalacao_com_bloqueio"}
+                 → HTTP 422 (Pydantic validation: missing field 'dashboard_photo_base64'). ✓
+
+            B) send-initial com foto inválida (1x1 PNG branco data-uri):
+               - HTTP 422 ✓
+               - Detail: "Foto do painel inválida: A imagem está completamente em
+                 branco e não é possível identificar nenhum painel ou informação."
+               - Vision behavior: REJEITOU corretamente (Gemini 2.5 Flash via
+                 emergentintegrations operacional). LiteLLM logs confirmam call
+                 bem-sucedida (~2.3s). NÃO degradou para auto-aprovação.
+
+            C) POST /checklists/{id}/finalize SEM dashboard_photo_base64:
+               - Encontrou 1 checklist com phase=in_execution na lista do técnico
+                 (a0690a39...) — usado como base.
+               - finalize com body {} → HTTP 422 (Pydantic missing field
+                 'dashboard_photo_base64') ✓
+
+            D) Regressão crítica (5/5):
+               - login dos 4 users (admin, tecnico, junior, n2) → 200 ✓
+               - GET /checklists (45 docs legados) → 200 (não crashou com
+                 docs antigos sem numero/nome após patch ChecklistOut com
+                 campos opcionais) ✓
+               - GET /admin/pending-approvals → 200 ✓
+               - GET /statement/me → 200 ✓
+               - GET /gamification/meta → 200 ✓
+               - GET /inventory/monthly-closure (junior) → 200 ✓
+
+            E) Backward-compat (criar checklist sem service_type_code e sem
+               dashboard_photo_*):
+               - POST /checklists rascunho mínimo → 200, id=8f628171... ✓
+               - GET /checklists/{id} → 200 com defaults:
+                 service_type_code="", dashboard_photo_in_url="",
+                 dashboard_photo_out_url="", dashboard_photo_in_valid=null,
+                 dashboard_photo_in_confidence=0.0 ✓
+
+            CONCLUSÃO: Fase 3C (Antifraude IA Vision Check-in/Out do Painel)
+            está 100% operacional. Validação obrigatória do campo
+            dashboard_photo_base64 em send-initial e finalize via Pydantic
+            (HTTP 422). Gemini 2.5 Flash rejeitou corretamente foto 1x1 em
+            branco com mensagem em PT-BR explicando o motivo. ChecklistOut
+            agora aceita docs legados sem numero/nome/empresa/etc. — GET
+            /checklists (45 docs) não crashou. Nenhuma regressão observada.
+
 metadata:
   created_by: "main_agent"
-  version: "2.6"
-  test_sequence: 17
+  version: "2.7"
+  test_sequence: 18
   run_ui: false
 
 test_plan:
@@ -1131,4 +1193,43 @@ agent_communication:
         seed + service-catalog endpoint) está 100% pronta. Backend sem
         regressões. OK para prosseguir para Fase 2 (cronômetro/SLA) e Fase 3
         (cálculo de comissionamento).
+
+    - agent: "testing"
+      message: |
+        ==================== v14 FASE 3C — IA VISION CHECK-IN/OUT — FULL PASS (16/16) ====================
+        Suite /app/backend_test.py contra
+        https://installer-track-1.preview.emergentagent.com/api
+
+        A) send-initial sem dashboard_photo_base64 → HTTP 422 ✓
+           (Pydantic missing field — comportamento correto)
+
+        B) send-initial com 1x1 PNG branco data-uri:
+           → HTTP 422 com detail: "Foto do painel inválida: A imagem está
+             completamente em branco e não é possível identificar nenhum
+             painel ou informação."
+           VISION COMPORTAMENTO: REJEITOU corretamente. Gemini 2.5 Flash via
+           emergentintegrations operacional (~2.3s call). Não degradou para
+           auto-aprovação. EMERGENT_LLM_KEY presente e funcional.
+
+        C) finalize sem dashboard_photo_base64 → HTTP 422 ✓
+           (encontrou 1 checklist phase=in_execution na lista do técnico —
+           a0690a39... — usado como base; Pydantic missing field)
+
+        D) Regressão crítica (5/5):
+           - Login admin/tecnico/junior/n2 → 200 ✓
+           - GET /checklists (45 docs legados, alguns sem campos antigos)
+             → 200 ✓ — ChecklistOut com campos opcionais (numero/nome/
+             sobrenome/empresa/equipamento) NÃO crashou
+           - GET /admin/pending-approvals → 200 ✓
+           - GET /statement/me → 200 ✓
+           - GET /gamification/meta → 200 ✓
+           - GET /inventory/monthly-closure (junior) → 200 ✓
+
+        E) Backward-compat: criar checklist sem service_type_code e sem
+           dashboard_photo_*; GET /checklists/{id} → 200 com defaults
+           (service_type_code="", dashboard_photo_*_url="",
+           dashboard_photo_in_valid=null, confidence=0.0). ✓
+
+        Vision behavior observed: REJECTED (Gemini ativo). Nenhuma
+        falha. Fase 3C 100% operacional e pronta para frontend.
 

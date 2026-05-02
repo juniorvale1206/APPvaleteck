@@ -307,6 +307,7 @@ def _sla_requires_equipment_photo(service_type_code: str) -> bool:
 
 class SendInitialPayload(BaseModel):
     service_type_code: str
+    dashboard_photo_base64: str        # v14 Fase 3C — foto obrigatória do painel (check-in)
     # Dados mínimos iniciais (podem já estar salvos no rascunho)
     nome: Optional[str] = None
     sobrenome: Optional[str] = None
@@ -320,22 +321,26 @@ class EquipmentPhotoPayload(BaseModel):
     photo_base64: str
 
 
+class FinalizePayload(BaseModel):
+    dashboard_photo_base64: str        # v14 Fase 3C — foto obrigatória do painel (check-out)
+
+
 @router.post("/{cid}/send-initial", response_model=ChecklistOut)
 async def send_initial_checklist(cid: str, payload: SendInitialPayload, user=Depends(get_current_user)):
-    """Inicia oficialmente o SLA server-side. Cliente+Instalação já devem estar preenchidos.
+    """Inicia oficialmente o SLA server-side. Exige foto do painel (check-in) com
+    validação via Gemini Vision (antifraude).
 
-    - Valida que `service_type_code` é um código válido do catálogo.
-    - Registra `checklist_sent_at` (UTC) do servidor — o relógio do celular não conta.
-    - Define `phase`:
-        - `awaiting_equipment_photo` se for instalação/telemetria
-        - `in_execution` se for manutenção/desinstalação/auditoria
+    - Valida `service_type_code` no catálogo.
+    - Valida que foto é um painel com ignição ligada.
+    - Se inválida, retorna 422 com motivo.
     """
     st = SERVICE_TYPES.get(payload.service_type_code)
     if not st:
         raise HTTPException(status_code=400, detail="service_type_code inválido")
     if st.level_restriction and user.get("level") != st.level_restriction:
-        # Admin pode overrid, não o técnico
         raise HTTPException(status_code=403, detail=f"Serviço restrito a nível {st.level_restriction.upper()}")
+    if not (payload.dashboard_photo_base64 or "").strip():
+        raise HTTPException(status_code=400, detail="dashboard_photo_base64 obrigatório (check-in do painel)")
 
     doc = await db.checklists.find_one({"id": cid, "user_id": user["id"]})
     if not doc:
@@ -343,7 +348,26 @@ async def send_initial_checklist(cid: str, payload: SendInitialPayload, user=Dep
     if doc.get("phase") not in (None, "", "draft"):
         raise HTTPException(status_code=409, detail=f"Checklist já iniciado (phase={doc.get('phase')})")
 
+    # Validação visual (Gemini Vision) — antifraude
+    from services.vision import validate_dashboard_photo
+    v = await validate_dashboard_photo(payload.dashboard_photo_base64, user_id=user["id"])
+    if not v.get("valid"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Foto do painel inválida: {v.get('reason', 'não é um painel com ignição ligada')}",
+        )
+
     now = datetime.now(timezone.utc).isoformat()
+    photo_url = payload.dashboard_photo_base64
+    if CLOUDINARY_ENABLED:
+        try:
+            photo_url = upload_base64_image(
+                payload.dashboard_photo_base64, folder=CLOUDINARY_FOLDER,
+                public_id=f"{cid}_dashboard_in",
+            )
+        except Exception:
+            pass
+
     update: dict = {
         "service_type_code": st.code.value,
         "service_type_name": st.name,
@@ -351,9 +375,13 @@ async def send_initial_checklist(cid: str, payload: SendInitialPayload, user=Dep
         "sla_base_value": st.base_value,
         "checklist_sent_at": now,
         "phase": "awaiting_equipment_photo" if _sla_requires_equipment_photo(st.code.value) else "in_execution",
+        "dashboard_photo_in_url": photo_url,
+        "dashboard_photo_in_at": now,
+        "dashboard_photo_in_valid": v.get("valid", False),
+        "dashboard_photo_in_reason": v.get("reason", ""),
+        "dashboard_photo_in_confidence": v.get("confidence", 0.0),
         "updated_at": now,
     }
-    # Opcional: salvar dados iniciais enviados
     for key in ("nome", "sobrenome", "placa", "cpf", "empresa", "tipo_atendimento"):
         val = getattr(payload, key, None)
         if val:
@@ -412,12 +440,14 @@ async def upload_equipment_photo(cid: str, payload: EquipmentPhotoPayload, user=
 
 
 @router.post("/{cid}/finalize", response_model=ChecklistOut)
-async def finalize_service(cid: str, user=Depends(get_current_user)):
-    """Encerra o SLA server-side. Chamado quando o técnico toca em 'Finalizar OS'.
+async def finalize_service(cid: str, payload: FinalizePayload, user=Depends(get_current_user)):
+    """Encerra o SLA server-side. Exige foto do painel (check-out) com validação Vision.
 
-    Calcula o tempo total (sla_total_sec) e marca phase=finalized.
-    O envio final completo do checklist (fotos + assinatura) continua via PUT /checklists/{id}.
+    Calcula sla_total_sec e marca phase=finalized.
     """
+    if not (payload.dashboard_photo_base64 or "").strip():
+        raise HTTPException(status_code=400, detail="dashboard_photo_base64 obrigatório (check-out do painel)")
+
     doc = await db.checklists.find_one({"id": cid, "user_id": user["id"]})
     if not doc:
         raise HTTPException(status_code=404, detail="Checklist não encontrado")
@@ -426,6 +456,15 @@ async def finalize_service(cid: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=409, detail="Cronômetro nunca foi iniciado")
     if doc.get("service_finished_at"):
         raise HTTPException(status_code=409, detail="Serviço já foi finalizado")
+
+    # Validação visual (Gemini Vision)
+    from services.vision import validate_dashboard_photo
+    v = await validate_dashboard_photo(payload.dashboard_photo_base64, user_id=user["id"])
+    if not v.get("valid"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Foto do painel inválida: {v.get('reason', 'não é um painel com ignição ligada')}",
+        )
 
     try:
         sent_dt = datetime.fromisoformat(sent_at.replace("Z", "+00:00"))
@@ -438,14 +477,29 @@ async def finalize_service(cid: str, user=Depends(get_current_user)):
     if sla_max > 0:
         within = (total_sec / 60.0) <= sla_max
 
+    photo_url = payload.dashboard_photo_base64
+    if CLOUDINARY_ENABLED:
+        try:
+            photo_url = upload_base64_image(
+                payload.dashboard_photo_base64, folder=CLOUDINARY_FOLDER,
+                public_id=f"{cid}_dashboard_out",
+            )
+        except Exception:
+            pass
+
     await db.checklists.update_one({"id": cid}, {"$set": {
         "service_finished_at": now.isoformat(),
         "sla_total_sec": total_sec,
-        "execution_elapsed_sec": total_sec,          # compat com telas antigas
-        "execution_ended_at": now.isoformat(),       # compat
-        "execution_started_at": sent_at,             # compat
+        "execution_elapsed_sec": total_sec,
+        "execution_ended_at": now.isoformat(),
+        "execution_started_at": sent_at,
         "sla_within": within,
         "phase": "finalized",
+        "dashboard_photo_out_url": photo_url,
+        "dashboard_photo_out_at": now.isoformat(),
+        "dashboard_photo_out_valid": v.get("valid", False),
+        "dashboard_photo_out_reason": v.get("reason", ""),
+        "dashboard_photo_out_confidence": v.get("confidence", 0.0),
         "updated_at": now.isoformat(),
     }})
     updated = await db.checklists.find_one({"id": cid}, {"_id": 0})

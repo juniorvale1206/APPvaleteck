@@ -160,6 +160,36 @@ export default function AdminApprovalDetail() {
               {!!item.sent_at && <Text style={styles.heroMeta}>Enviado em {new Date(item.sent_at).toLocaleString("pt-BR")}</Text>}
             </View>
 
+            {/* v14 Fase 3C — Dossiê visual Check-in / Equipamento / Check-out */}
+            {(item.dashboard_photo_in_url || item.equipment_photo_url || item.dashboard_photo_out_url) && (
+              <View style={[styles.card, { borderColor: colors.primary, borderWidth: 1.5 }]} testID="dossie-fotos">
+                <Text style={styles.cardTitle}>📸 Dossiê de Evidências (Check-in → Execução → Check-out)</Text>
+                <View style={{ flexDirection: "row", gap: 8, marginTop: 8 }}>
+                  {[
+                    { url: item.dashboard_photo_in_url, label: "Check-in", valid: item.dashboard_photo_in_valid, reason: item.dashboard_photo_in_reason, at: item.dashboard_photo_in_at },
+                    { url: item.equipment_photo_url, label: "Equipamento", valid: !item.equipment_photo_flag, reason: item.equipment_photo_flag ? `Atraso ${item.equipment_photo_delay_sec}s` : "OK", at: item.equipment_photo_at },
+                    { url: item.dashboard_photo_out_url, label: "Check-out", valid: item.dashboard_photo_out_valid, reason: item.dashboard_photo_out_reason, at: item.dashboard_photo_out_at },
+                  ].map((it, idx) => (
+                    <View key={idx} style={{ flex: 1, alignItems: "center" }}>
+                      <Text style={{ color: colors.textMuted, fontSize: fonts.size.xs, fontWeight: "800", marginBottom: 4 }}>{it.label}</Text>
+                      {it.url ? (
+                        <>
+                          <Image source={{ uri: it.url.startsWith("http") ? it.url : it.url }} style={{ width: "100%", height: 92, borderRadius: 8, backgroundColor: "#000" }} />
+                          <Text style={{ color: it.valid === false ? colors.danger : colors.success, fontSize: 10, fontWeight: "800", marginTop: 3, textAlign: "center" }} numberOfLines={2}>
+                            {it.valid === false ? "⚠️ " : "✓ "}{it.reason || "—"}
+                          </Text>
+                        </>
+                      ) : (
+                        <View style={{ width: "100%", height: 92, borderRadius: 8, borderWidth: 1, borderColor: colors.border, borderStyle: "dashed", alignItems: "center", justifyContent: "center" }}>
+                          <Text style={{ color: colors.textMuted, fontSize: 10 }}>Sem foto</Text>
+                        </View>
+                      )}
+                    </View>
+                  ))}
+                </View>
+              </View>
+            )}
+
             {/* v14 — Preview do Motor de Comissionamento */}
             {(item.service_type_code || item.sla_total_sec) && (() => {
               const slaMax = item.sla_max_minutes || 0;

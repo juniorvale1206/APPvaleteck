@@ -27,7 +27,7 @@ export default function StepCliente() {
     else if (!isValidPlate(draft.placa)) e.placa = "Placa inválida (ex: ABC1D23)";
     setErrors(e);
     if (Object.keys(e).length) return;
-    router.push("/(app)/checklist/new/instalacao");
+    router.push("/(app)/checklist/new/checkin");
   };
 
   return (

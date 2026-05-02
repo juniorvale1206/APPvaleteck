@@ -89,7 +89,7 @@ class ChecklistInput(BaseModel):
 
 class ChecklistOut(BaseModel):
     id: str
-    numero: str
+    numero: Optional[str] = ""
     user_id: str
     status: str
     vehicle_type: Optional[str] = ""
@@ -99,15 +99,15 @@ class ChecklistOut(BaseModel):
     vehicle_color: Optional[str] = ""
     vehicle_vin: Optional[str] = ""
     vehicle_odometer: Optional[int] = None
-    nome: str
-    sobrenome: str
-    placa: str
+    nome: Optional[str] = ""
+    sobrenome: Optional[str] = ""
+    placa: Optional[str] = ""
     telefone: Optional[str] = ""
     obs_iniciais: Optional[str] = ""
     problems_client: List[str] = []
     problems_client_other: Optional[str] = ""
-    empresa: str
-    equipamento: str
+    empresa: Optional[str] = ""
+    equipamento: Optional[str] = ""
     tipo_atendimento: Optional[str] = ""
     acessorios: List[str] = []
     obs_tecnicas: Optional[str] = ""
@@ -138,6 +138,17 @@ class ChecklistOut(BaseModel):
     equipment_photo_url: Optional[str] = ""
     service_finished_at: Optional[str] = ""
     sla_total_sec: Optional[int] = 0
+    # v14 Fase 3C — Check-in/out do painel (antifraude visual)
+    dashboard_photo_in_url: Optional[str] = ""
+    dashboard_photo_in_at: Optional[str] = ""
+    dashboard_photo_in_valid: Optional[bool] = None
+    dashboard_photo_in_reason: Optional[str] = ""
+    dashboard_photo_in_confidence: Optional[float] = 0.0
+    dashboard_photo_out_url: Optional[str] = ""
+    dashboard_photo_out_at: Optional[str] = ""
+    dashboard_photo_out_valid: Optional[bool] = None
+    dashboard_photo_out_reason: Optional[str] = ""
+    dashboard_photo_out_confidence: Optional[float] = 0.0
     photos: List[PhotoIn] = []
     location: Optional[dict] = None
     location_available: bool = False

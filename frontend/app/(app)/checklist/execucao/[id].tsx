@@ -31,6 +31,8 @@ export default function Execucao() {
   const [photoUploading, setPhotoUploading] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [finalizeModalOpen, setFinalizeModalOpen] = useState(false);
+  const [checkoutPhoto, setCheckoutPhoto] = useState<string>("");
+  const [checkoutBusy, setCheckoutBusy] = useState(false);
   const tickRef = useRef<any>(null);
 
   const loadItem = useCallback(async () => {
@@ -103,16 +105,37 @@ export default function Execucao() {
     finally { setPhotoPicking(false); }
   };
 
-  const confirmFinalize = () => setFinalizeModalOpen(true);
+  const confirmFinalize = () => { setCheckoutPhoto(""); setFinalizeModalOpen(true); };
+
+  const captureCheckoutPhoto = async () => {
+    setCheckoutBusy(true);
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) { Alert.alert("Permissão", "Câmera necessária."); return; }
+      const res = await ImagePicker.launchCameraAsync({
+        allowsEditing: false, quality: 0.6, base64: true,
+      });
+      if (res.canceled || !res.assets?.[0]?.base64) return;
+      setCheckoutPhoto(`data:image/jpeg;base64,${res.assets[0].base64}`);
+    } catch (e: any) { Alert.alert("Erro", e?.message || "Falha na câmera"); }
+    finally { setCheckoutBusy(false); }
+  };
+
   const doFinalize = async () => {
+    if (!checkoutPhoto) {
+      Alert.alert("Foto obrigatória", "Tire a foto do painel (check-out) antes de finalizar.");
+      return;
+    }
     setFinishing(true);
     try {
-      const { data } = await api.post<Checklist>(`/checklists/${id}/finalize`);
+      const { data } = await api.post<Checklist>(`/checklists/${id}/finalize`, {
+        dashboard_photo_base64: checkoutPhoto,
+      });
       setItem(data);
       setFinalizeModalOpen(false);
       Alert.alert(
         "✅ Serviço finalizado",
-        `Tempo total: ${formatDuration(data.sla_total_sec || 0)}\nAgora conclua as etapas finais: fotos e assinatura.`,
+        `Tempo total: ${formatDuration(data.sla_total_sec || 0)}\n✓ Check-in e Check-out registrados.\nAgora conclua as evidências e assinatura.`,
         [{ text: "OK", onPress: () => router.replace({ pathname: "/(app)/checklist/new/evidencias", params: { id } }) }],
       );
     } catch (e) { Alert.alert("Erro", apiErrorMessage(e)); }
@@ -253,22 +276,59 @@ export default function Execucao() {
         )}
       </ScrollView>
 
-      {/* Modal confirmação de finalização */}
+      {/* Modal confirmação de finalização com check-out do painel */}
       <Modal visible={finalizeModalOpen} transparent animationType="fade" onRequestClose={() => setFinalizeModalOpen(false)}>
         <View style={styles.modalBd}>
           <View style={styles.modalCard}>
-            <Ionicons name="stop-circle" size={44} color={colors.danger} style={{ alignSelf: "center" }} />
-            <Text style={styles.modalTitle}>Finalizar serviço?</Text>
+            <Ionicons name="speedometer" size={44} color={colors.primary} style={{ alignSelf: "center" }} />
+            <Text style={styles.modalTitle}>Check-out do veículo</Text>
             <Text style={styles.modalMsg}>
+              Foto do painel obrigatória (ignição ligada + KM visível).{"\n"}
               O cronômetro será parado em {formatDuration(elapsedSec)}.
               {slaOver ? "\n\n⚠️ SLA já extrapolado — valor pode ser cortado em 50%." : ""}
             </Text>
+
+            {checkoutPhoto ? (
+              <View style={styles.modalPreview}>
+                <Image source={{ uri: checkoutPhoto }} style={styles.modalThumb} />
+                <TouchableOpacity onPress={() => setCheckoutPhoto("")} style={styles.modalRetake}>
+                  <Ionicons name="camera-reverse" size={16} color={colors.text} />
+                  <Text style={{ color: colors.text, fontWeight: "700" }}>Refazer</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity
+                testID="btn-capture-checkout"
+                style={[styles.btn, { backgroundColor: colors.primary, marginTop: 8 }]}
+                onPress={captureCheckoutPhoto}
+                disabled={checkoutBusy}
+              >
+                {checkoutBusy ? (
+                  <ActivityIndicator color={colors.onPrimary} />
+                ) : (
+                  <>
+                    <Ionicons name="camera" size={20} color={colors.onPrimary} />
+                    <Text style={[styles.btnTxt, { color: colors.onPrimary }]}>Tirar foto do painel</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            )}
+
             <View style={styles.modalBtns}>
               <TouchableOpacity style={[styles.btn, { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, flex: 1 }]} onPress={() => setFinalizeModalOpen(false)}>
                 <Text style={[styles.btnTxt, { color: colors.text }]}>Cancelar</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.btn, { backgroundColor: colors.danger, flex: 1 }]} onPress={doFinalize} disabled={finishing}>
-                {finishing ? <ActivityIndicator color="#FFF" /> : <Text style={styles.btnTxt}>Finalizar</Text>}
+              <TouchableOpacity
+                testID="btn-finalize-confirm"
+                style={[styles.btn, { backgroundColor: checkoutPhoto ? colors.danger : colors.surfaceAlt, flex: 1 }]}
+                onPress={doFinalize}
+                disabled={finishing || !checkoutPhoto}
+              >
+                {finishing
+                  ? <ActivityIndicator color="#FFF" />
+                  : <Text style={[styles.btnTxt, { color: checkoutPhoto ? "#FFF" : colors.textMuted }]}>
+                      {checkoutPhoto ? "Finalizar agora" : "📸 Tire a foto"}
+                    </Text>}
               </TouchableOpacity>
             </View>
           </View>
@@ -331,5 +391,8 @@ const styles = StyleSheet.create({
   modalCard: { backgroundColor: colors.bg, borderRadius: radii.lg, padding: space.lg, gap: 10 },
   modalTitle: { color: colors.text, fontWeight: "900", fontSize: fonts.size.lg, textAlign: "center" },
   modalMsg: { color: colors.textMuted, fontSize: fonts.size.sm, textAlign: "center", marginBottom: 8 },
+  modalPreview: { alignItems: "center", gap: 6, marginVertical: 8 },
+  modalThumb: { width: 200, height: 140, borderRadius: 8, backgroundColor: "#000" },
+  modalRetake: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: colors.surfaceAlt },
   modalBtns: { flexDirection: "row", gap: 10, marginTop: 8 },
 });

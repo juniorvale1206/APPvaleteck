@@ -187,6 +187,17 @@ export type Checklist = {
   equipment_photo_url?: string;
   service_finished_at?: string;
   sla_total_sec?: number;
+  // v14 Fase 3C — Check-in/out do painel
+  dashboard_photo_in_url?: string;
+  dashboard_photo_in_at?: string;
+  dashboard_photo_in_valid?: boolean | null;
+  dashboard_photo_in_reason?: string;
+  dashboard_photo_in_confidence?: number;
+  dashboard_photo_out_url?: string;
+  dashboard_photo_out_at?: string;
+  dashboard_photo_out_valid?: boolean | null;
+  dashboard_photo_out_reason?: string;
+  dashboard_photo_out_confidence?: number;
   // v14 Fase 3B — Motor Financeiro (persistido na aprovação)
   comp_base_value?: number;
   comp_sla_cut?: boolean;
