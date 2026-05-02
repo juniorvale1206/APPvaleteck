@@ -16,8 +16,31 @@ from services.inventory import categorize_equipment, default_equipment_value, co
 from services.pdf import render_checklist_pdf
 from services.plates import normalize_plate, valid_plate
 from models.checklist import ChecklistInput, ChecklistOut, PhotoIn, RemovedEquipmentIn
+from models.service_types import SERVICE_TYPES
 
 router = APIRouter(prefix="/checklists", tags=["checklists"])
+
+
+def _svc_name(code: Optional[str]) -> str:
+    st = SERVICE_TYPES.get(code or "")
+    return st.name if st else ""
+
+
+def _svc_max_minutes(code: Optional[str]) -> int:
+    st = SERVICE_TYPES.get(code or "")
+    return st.max_minutes if st else 0
+
+
+def _svc_base_value(code: Optional[str]) -> float:
+    st = SERVICE_TYPES.get(code or "")
+    return st.base_value if st else 0.0
+
+
+def _svc_within(code: Optional[str], elapsed_sec: int) -> Optional[bool]:
+    st = SERVICE_TYPES.get(code or "")
+    if not st or not elapsed_sec:
+        return None
+    return (elapsed_sec / 60.0) <= st.max_minutes
 
 
 async def _apply_inventory_ops(payload: ChecklistInput, user_id: str, checklist_id: str, numero: str) -> List[dict]:
@@ -225,6 +248,12 @@ async def create_checklist(payload: ChecklistInput, user=Depends(get_current_use
         "execution_started_at": payload.execution_started_at or "",
         "execution_ended_at": payload.execution_ended_at or "",
         "execution_elapsed_sec": payload.execution_elapsed_sec or 0,
+        # v14 — Motor de Comissionamento: snapshot do SLA no momento do envio
+        "service_type_code": payload.service_type_code or "",
+        "service_type_name": _svc_name(payload.service_type_code),
+        "sla_max_minutes": _svc_max_minutes(payload.service_type_code),
+        "sla_base_value": _svc_base_value(payload.service_type_code),
+        "sla_within": _svc_within(payload.service_type_code, payload.execution_elapsed_sec or 0),
         "appointment_id": payload.appointment_id or "",
         "nome": payload.nome.strip(),
         "sobrenome": payload.sobrenome.strip(),

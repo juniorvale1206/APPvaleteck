@@ -516,10 +516,83 @@ backend:
             Tutoria junior→n3 (Pedro→Marina) persistida em DB. Nenhuma regressão
             nos endpoints existentes.
 
+backend:
+  - task: "v14 Fase 2 — Motor de Comissionamento (/statement/me + snapshot SLA em checklists)"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/statement.py + /app/backend/routes/checklists.py + /app/backend/models/checklist.py + /app/backend/models/service_types.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            ==================== v14 FASE 2 — FULL PASS ====================
+            Suite /app/backend_test.py contra
+            https://installer-track-1.preview.emergentagent.com/api
+            Resultado: 38/38 PASS, 0 falhas.
+
+            A) GET /statement/me (tecnico@valeteck.com, mês atual 2026-05):
+               - HTTP 200 ✓
+               - Todas as 16 chaves obrigatórias presentes (month, level,
+                 total_os, valid_os, duplicates, within_sla, out_sla,
+                 sla_compliance_pct, gross_estimated, penalty_total,
+                 penalty_count, net_estimated, meta_target, meta_reached,
+                 meta_remaining, by_service) ✓
+               - level="n1", meta_target=60, month="2026-05" (regex YYYY-MM) ✓
+               - total_os=21, by_service=[{code:"sem_tipo",...}] (checklists
+                 legados sem service_type_code agrupados em "sem_tipo") ✓
+
+            B) GET /statement/me (junior@valeteck.com):
+               - HTTP 200, level="junior", meta_target=30 ✓
+
+            C) GET /statement/me?month=2026-04 (mês vazio):
+               - HTTP 200 com month="2026-04", total_os=0 ✓ (endpoint não
+                 quebra em meses vazios)
+
+            D) GET /statement/me?month=invalido:
+               - HTTP 400 com detail="month inválido. Use formato YYYY-MM." ✓
+
+            E) POST /checklists com service_type_code (RASCUNHO):
+               - payload: nome=Teste, sobrenome=SLA, placa=TST1234,
+                 empresa=Rastremix, tipo_atendimento=Instalação,
+                 service_type_code="instalacao_com_bloqueio",
+                 execution_elapsed_sec=1500 (25 min)
+               - HTTP 200, id retornado ✓
+               - GET /checklists/{id} confirma snapshot gravado:
+                 service_type_code="instalacao_com_bloqueio",
+                 service_type_name="Instalação C/ Bloqueio",
+                 sla_max_minutes=50, sla_base_value=5.0, sla_within=true ✓
+
+            F) POST /checklists SEM service_type_code (backward compat):
+               - HTTP 200 ✓
+               - Defaults preservados: service_type_code="", service_type_name="",
+                 sla_max_minutes=0, sla_base_value=0.0, sla_within=null ✓
+
+            G) REGRESSÃO LEVE (todos 200):
+               - GET /auth/me (inclui level='n1' + tutor_id) ✓
+               - GET /gamification/meta ✓
+               - GET /gamification/profile ✓
+               - GET /inventory/me ✓
+               - GET /reference/service-catalog → {items:[...]} com 11 itens ✓
+               - GET /reference/service-catalog?level=junior → 9 itens
+                 (sem acessórios) ✓
+
+            Observação NÃO-bloqueante: o brief sugeriu empresa="VELOTRAX" para
+            o teste de criação. Isso retorna 400 "Empresa inválida" (validação
+            correta — empresa precisa ser uma de COMPANIES:
+            Rastremix|GPS My|GPS Joy|Topy Pro|Telensat|Valeteck). O teste
+            usou "Rastremix" e passou normalmente. Não é bug do backend.
+
+            CONCLUSÃO: Fase 2 do Motor de Comissionamento (extrato mensal +
+            snapshot SLA no checklist) está 100% operacional. Nenhuma
+            regressão identificada nos endpoints pré-existentes.
+
 metadata:
   created_by: "main_agent"
-  version: "2.3"
-  test_sequence: 14
+  version: "2.4"
+  test_sequence: 15
   run_ui: false
 
 test_plan:

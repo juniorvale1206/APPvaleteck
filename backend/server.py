@@ -38,6 +38,7 @@ from routes import (
     partners,
     rankings,
     reference,
+    statement,
     system,
 )
 
@@ -68,6 +69,7 @@ api.include_router(rankings.router)
 api.include_router(gamification.router)
 api.include_router(inventory.router)
 api.include_router(closures.router)
+api.include_router(statement.router)
 api.include_router(device.router)
 api.include_router(ocr.router)
 api.include_router(partners.router)

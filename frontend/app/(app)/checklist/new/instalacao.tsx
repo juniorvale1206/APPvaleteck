@@ -7,7 +7,9 @@ import { Btn, Field, MultiSelect, Select, StepProgress } from "../../../../src/c
 import { useDraft } from "../../../../src/draft";
 import { api } from "../../../../src/api";
 import { SLABadge } from "../../../../src/SLABadge";
-import { useSLATimer } from "../../../../src/slatimer";
+import { SLATimerCard } from "../../../../src/SLATimerCard";
+import { ServiceTypePicker, type ServiceTypeDef } from "../../../../src/ServiceTypePicker";
+import { useAuth } from "../../../../src/auth";
 import BarcodeScanner from "../../../../src/scanner";
 import { RemovedEquipmentsSection } from "../../../../src/RemovedEquipmentsSection";
 import { colors, fonts, radii, space } from "../../../../src/theme";
@@ -30,18 +32,18 @@ function voltageStatus(v: number | null) {
 export default function StepInstalacao() {
   const router = useRouter();
   const { draft, set } = useDraft();
-  const { startIfNeeded } = useSLATimer();
+  const { user } = useAuth();
   const [companies, setCompanies] = useState<string[]>([]);
   const [equipments, setEquipments] = useState<string[]>([]);
   const [accessories, setAccessories] = useState<string[]>([]);
   const [serviceTypes, setServiceTypes] = useState<string[]>([]);
   const [batteryStates, setBatteryStates] = useState<string[]>([]);
   const [techProblems, setTechProblems] = useState<string[]>([]);
+  const [serviceDef, setServiceDef] = useState<ServiceTypeDef | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [scanMode, setScanMode] = useState<null | "imei" | "iccid">(null);
 
   useEffect(() => {
-    startIfNeeded();
     (async () => {
       try {
         const [c, e, a, s, b, p] = await Promise.all([
@@ -86,6 +88,18 @@ export default function StepInstalacao() {
       <StepProgress step={3} total={6} />
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+          {/* v14 — Motor de Comissionamento: cronômetro + tipo de serviço oficial */}
+          <SLATimerCard serviceDef={serviceDef} />
+          <ServiceTypePicker
+            testID="service-type-picker"
+            value={draft.service_type_code}
+            level={user?.level || undefined}
+            onChange={(code, def) => {
+              set({ service_type_code: code });
+              setServiceDef(def);
+            }}
+          />
+
           <Text style={styles.section}>Dados da instalação</Text>
           <Select testID="select-empresa" label="Empresa / Parceiro" required value={draft.empresa as any} options={companies} onChange={(v) => set({ empresa: v })} error={errors.empresa} />
           <Select testID="select-equipamento" label="Equipamento principal" required value={draft.equipamento as any} options={equipments} onChange={(v) => set({ equipamento: v })} error={errors.equipamento} />

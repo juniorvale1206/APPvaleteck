@@ -34,6 +34,8 @@ export type Draft = {
   execution_started_at: string;
   execution_ended_at: string;
   execution_elapsed_sec: number;
+  // v14 — Motor de Comissionamento
+  service_type_code: string;        // código da tabela oficial (desinstalacao, instalacao_com_bloqueio, etc.)
   photos: Photo[];
   location: { lat: number; lng: number } | null;
   location_available: boolean;
@@ -76,6 +78,7 @@ const empty: Draft = {
   execution_started_at: "",
   execution_ended_at: "",
   execution_elapsed_sec: 0,
+  service_type_code: "",
   photos: [],
   location: null,
   location_available: false,

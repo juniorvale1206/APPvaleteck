@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { api, clearTokens, setTokens, getAccessToken, setOnSessionExpired } from "./api";
 
-type User = { id: string; email: string; name: string; role: string };
+type User = { id: string; email: string; name: string; role: string; level?: string | null; tutor_id?: string | null };
 
 type AuthCtx = {
   user: User | null | undefined; // undefined = checking

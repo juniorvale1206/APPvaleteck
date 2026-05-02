@@ -1,238 +1,302 @@
-"""Valeteck v14 - Fase 1 do Motor de Comissionamento — smoke test.
+"""Backend smoke test — Valeteck v14 Fase 2 do Motor de Comissionamento.
 
-Valida:
-  A) Login + UserOut (level + tutor_id) para admin, tecnico, n2, n3, junior.
-  B) GET /auth/me com token do junior: level='junior' e tutor_id==id do n3.
-  C) GET /reference/service-catalog sem filtro → 11 itens + keys esperadas.
-  D) GET /reference/service-catalog?level=junior (e ?level=n1) → 9 itens, sem categoria "acessorio".
-  E) GET /reference/service-catalog?level=n2 → 11 itens (incluindo acessórios).
-  F) Regressão com técnico (tecnico@valeteck.com): /auth/me, /appointments,
-     /gamification/meta (target=60), /gamification/profile, /inventory/me.
+Escopo:
+  A) GET /api/statement/me (mês atual) — técnico n1
+  B) GET /api/statement/me (mês atual) — júnior
+  C) GET /api/statement/me?month=2026-04
+  D) GET /api/statement/me?month=invalido
+  E) POST /api/checklists com service_type_code
+  F) POST /api/checklists sem service_type_code (backward compat)
+  G) Regressão leve (/auth/me, /gamification/meta, /gamification/profile,
+     /inventory/me, /reference/service-catalog)
 """
-from __future__ import annotations
-
-import json
+import os
+import re
 import sys
-from typing import Any, Optional
+from typing import Any
 
 import requests
 
-BASE = "https://installer-track-1.preview.emergentagent.com/api"
+BASE_URL = os.environ.get(
+    "BACKEND_BASE_URL",
+    "https://installer-track-1.preview.emergentagent.com/api",
+).rstrip("/")
 
-USERS = [
-    {"email": "admin@valeteck.com",   "password": "admin123",   "role": "admin",   "level": None,     "expect_tutor": False},
-    {"email": "tecnico@valeteck.com", "password": "tecnico123", "role": "tecnico", "level": "n1",     "expect_tutor": False},
-    {"email": "n2@valeteck.com",      "password": "n2tech123",  "role": "tecnico", "level": "n2",     "expect_tutor": False},
-    {"email": "n3@valeteck.com",      "password": "n3tech123",  "role": "tecnico", "level": "n3",     "expect_tutor": False},
-    {"email": "junior@valeteck.com",  "password": "junior123",  "role": "tecnico", "level": "junior", "expect_tutor": True},
-]
+TECNICO = ("tecnico@valeteck.com", "tecnico123")
+JUNIOR = ("junior@valeteck.com", "junior123")
 
-PASS = "\u2705"
-FAIL = "\u274c"
+STATEMENT_REQUIRED_KEYS = {
+    "month", "level", "total_os", "valid_os", "duplicates",
+    "within_sla", "out_sla", "sla_compliance_pct",
+    "gross_estimated", "penalty_total", "penalty_count",
+    "net_estimated", "meta_target", "meta_reached",
+    "meta_remaining", "by_service",
+}
 
 results: list[tuple[str, bool, str]] = []
 
 
-def mark(label: str, ok: bool, detail: str = "") -> None:
-    results.append((label, ok, detail))
-    print(f"{PASS if ok else FAIL} {label} :: {detail}")
+def log(name: str, cond: bool, extra: str = "") -> bool:
+    mark = "✅" if cond else "❌"
+    msg = f"{mark} {name}" + (f" — {extra}" if extra else "")
+    print(msg)
+    results.append((name, cond, extra))
+    return cond
 
 
-def post_login(email: str, password: str) -> Optional[dict[str, Any]]:
-    r = requests.post(f"{BASE}/auth/login", json={"email": email, "password": password}, timeout=20)
+def login(email: str, password: str) -> str:
+    r = requests.post(
+        f"{BASE_URL}/auth/login",
+        json={"email": email, "password": password},
+        timeout=20,
+    )
+    assert r.status_code == 200, f"login {email} falhou: {r.status_code} {r.text[:200]}"
+    data = r.json()
+    token = data.get("access_token") or data.get("token")
+    assert token, f"token ausente para {email}"
+    return token
+
+
+def H(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def run_section_A(token_tec: str):
+    print("\n=== A) GET /statement/me (mês atual) — tecnico (n1) ===")
+    r = requests.get(f"{BASE_URL}/statement/me", headers=H(token_tec), timeout=20)
+    log("A1 HTTP 200", r.status_code == 200, f"status={r.status_code} body={r.text[:300]}")
     if r.status_code != 200:
         return None
-    return r.json()
+    data = r.json()
+    missing = STATEMENT_REQUIRED_KEYS - set(data.keys())
+    log("A2 todas as chaves presentes", not missing,
+        f"faltam={sorted(missing)}" if missing else "OK")
+    log("A3 level == 'n1'", data.get("level") == "n1", f"level={data.get('level')}")
+    log("A4 meta_target == 60", data.get("meta_target") == 60,
+        f"meta_target={data.get('meta_target')}")
+    m = data.get("month", "")
+    log("A5 month formato YYYY-MM", bool(re.fullmatch(r"\d{4}-\d{2}", m)), f"month={m}")
+    log("A6 total_os >= 0", isinstance(data.get("total_os"), int) and data["total_os"] >= 0,
+        f"total_os={data.get('total_os')}")
+    log("A7 by_service é lista", isinstance(data.get("by_service"), list),
+        f"type={type(data.get('by_service')).__name__}")
+    return data
 
 
-def get_with_token(path: str, token: str) -> requests.Response:
-    return requests.get(f"{BASE}{path}", headers={"Authorization": f"Bearer {token}"}, timeout=20)
+def run_section_B():
+    print("\n=== B) GET /statement/me — junior ===")
+    token = login(*JUNIOR)
+    r = requests.get(f"{BASE_URL}/statement/me", headers=H(token), timeout=20)
+    log("B1 HTTP 200", r.status_code == 200, f"status={r.status_code} body={r.text[:200]}")
+    if r.status_code != 200:
+        return
+    data = r.json()
+    log("B2 level == 'junior'", data.get("level") == "junior",
+        f"level={data.get('level')}")
+    log("B3 meta_target == 30", data.get("meta_target") == 30,
+        f"meta_target={data.get('meta_target')}")
 
 
-# -------------------- A) Login + UserOut --------------------
-print("\n========== A) LOGIN + USEROUT ==========")
-tokens: dict[str, str] = {}
-ids: dict[str, str] = {}
-user_payloads: dict[str, dict[str, Any]] = {}
-
-for spec in USERS:
-    email = spec["email"]
-    payload = post_login(email, spec["password"])
-    if payload is None:
-        mark(f"login::{email}", False, "status != 200")
-        continue
-    user = payload.get("user") or {}
-    access = payload.get("access_token")
-    mark(f"login::{email} → 200", access is not None and "user" in payload,
-         f"access_len={len(access) if access else 0}, keys={list(payload.keys())}")
-    # role
-    mark(f"user.role == {spec['role']} ({email})", user.get("role") == spec["role"],
-         f"got role={user.get('role')!r}")
-    # level
-    level_ok = user.get("level") == spec["level"]
-    # Admin: accept missing or None
-    if spec["level"] is None and "level" not in user:
-        level_ok = True
-    mark(f"user.level == {spec['level']!r} ({email})", level_ok,
-         f"got level={user.get('level')!r}")
-    # tutor_id
-    if spec["expect_tutor"]:
-        mark(f"user.tutor_id != null ({email})", bool(user.get("tutor_id")),
-             f"got tutor_id={user.get('tutor_id')!r}")
-    else:
-        tid = user.get("tutor_id")
-        mark(f"user.tutor_id is null ({email})", tid is None,
-             f"got tutor_id={tid!r}")
-    if access:
-        tokens[email] = access
-    if user.get("id"):
-        ids[email] = user["id"]
-    user_payloads[email] = user
-
-# Cross-validation: junior.tutor_id == n3.id
-junior = user_payloads.get("junior@valeteck.com") or {}
-n3_id = ids.get("n3@valeteck.com")
-mark(
-    "junior.tutor_id == n3.id",
-    junior.get("tutor_id") == n3_id and n3_id is not None,
-    f"junior.tutor_id={junior.get('tutor_id')!r}, n3.id={n3_id!r}",
-)
-
-# -------------------- B) /auth/me com token do junior --------------------
-print("\n========== B) /AUTH/ME (JUNIOR) ==========")
-jtoken = tokens.get("junior@valeteck.com")
-if not jtoken:
-    mark("/auth/me junior (pré-req)", False, "sem token")
-else:
-    r = get_with_token("/auth/me", jtoken)
-    ok = r.status_code == 200
-    me_user = r.json() if ok else {}
-    mark("/auth/me status 200", ok, f"status={r.status_code}")
-    mark("/auth/me level == junior", me_user.get("level") == "junior",
-         f"got level={me_user.get('level')!r}")
-    mark("/auth/me tutor_id != null", bool(me_user.get("tutor_id")),
-         f"got tutor_id={me_user.get('tutor_id')!r}")
-    mark("/auth/me tutor_id == n3.id", me_user.get("tutor_id") == n3_id,
-         f"tutor={me_user.get('tutor_id')!r} n3={n3_id!r}")
-
-# -------------------- C) /reference/service-catalog sem filtro --------------------
-# NOTA: endpoint exige auth? vamos usar admin para ser seguro
-print("\n========== C) /REFERENCE/SERVICE-CATALOG (sem filtro) ==========")
-admin_token = tokens.get("admin@valeteck.com")
-headers_admin = {"Authorization": f"Bearer {admin_token}"} if admin_token else {}
-r = requests.get(f"{BASE}/reference/service-catalog", headers=headers_admin, timeout=20)
-mark("GET /reference/service-catalog → 200", r.status_code == 200, f"status={r.status_code}")
-items: list[dict[str, Any]] = []
-if r.status_code == 200:
-    body = r.json()
-    items = body.get("items", [])
-    mark("service-catalog retorna exatamente 11 itens", len(items) == 11, f"got {len(items)}")
-    # Checar keys do primeiro item
-    if items:
-        expected_keys = {"code", "name", "category", "max_minutes", "base_value", "level_restriction"}
-        missing = expected_keys - set(items[0].keys())
-        mark("item possui todas as keys esperadas", not missing,
-             f"missing={missing}, keys={list(items[0].keys())}")
-
-    # Verificar itens chave
-    by_code = {it["code"]: it for it in items}
-
-    des = by_code.get("desinstalacao", {})
-    ok_des = (des.get("max_minutes") == 20 and float(des.get("base_value", 0)) == 2.00
-              and des.get("category") == "desinstalacao" and des.get("level_restriction") is None)
-    mark("desinstalacao {max_minutes=20, base_value=2.00, category=desinstalacao, level_restriction=null}",
-         ok_des, f"got {des}")
-
-    sensor = by_code.get("acessorio_sensor_estacionamento", {})
-    ok_sensor = (sensor.get("max_minutes") == 60 and float(sensor.get("base_value", 0)) == 10.00
-                 and sensor.get("category") == "acessorio" and sensor.get("level_restriction") == "n2")
-    mark("acessorio_sensor_estacionamento {max_minutes=60, base_value=10.00, category=acessorio, level_restriction=n2}",
-         ok_sensor, f"got {sensor}")
-
-    bloq_part = by_code.get("instalacao_bloq_antifurto_partida", {})
-    ok_bloq = (bloq_part.get("max_minutes") == 70 and float(bloq_part.get("base_value", 0)) == 7.00)
-    mark("instalacao_bloq_antifurto_partida {max_minutes=70, base_value=7.00}",
-         ok_bloq, f"got {bloq_part}")
-
-# -------------------- D) level=junior / level=n1 --------------------
-print("\n========== D) /REFERENCE/SERVICE-CATALOG?level=junior & ?level=n1 ==========")
-for lvl in ("junior", "n1"):
-    r = requests.get(f"{BASE}/reference/service-catalog", params={"level": lvl}, headers=headers_admin, timeout=20)
-    mark(f"GET service-catalog?level={lvl} → 200", r.status_code == 200, f"status={r.status_code}")
+def run_section_C(token_tec: str):
+    print("\n=== C) GET /statement/me?month=2026-04 ===")
+    r = requests.get(
+        f"{BASE_URL}/statement/me",
+        params={"month": "2026-04"},
+        headers=H(token_tec),
+        timeout=20,
+    )
+    log("C1 HTTP 200 mesmo em mês passado",
+        r.status_code == 200, f"status={r.status_code} body={r.text[:200]}")
     if r.status_code == 200:
-        lst = r.json().get("items", [])
-        mark(f"level={lvl} retorna 9 itens", len(lst) == 9, f"got {len(lst)}")
-        cats = {it.get("category") for it in lst}
-        mark(f"level={lvl} sem category=acessorio", "acessorio" not in cats, f"categories={cats}")
+        data = r.json()
+        log("C2 month == '2026-04'", data.get("month") == "2026-04",
+            f"month={data.get('month')}")
 
-# -------------------- E) level=n2 --------------------
-print("\n========== E) /REFERENCE/SERVICE-CATALOG?level=n2 ==========")
-r = requests.get(f"{BASE}/reference/service-catalog", params={"level": "n2"}, headers=headers_admin, timeout=20)
-mark("GET service-catalog?level=n2 → 200", r.status_code == 200, f"status={r.status_code}")
-if r.status_code == 200:
-    lst = r.json().get("items", [])
-    mark("level=n2 retorna 11 itens", len(lst) == 11, f"got {len(lst)}")
-    acc_count = sum(1 for it in lst if it.get("category") == "acessorio")
-    mark("level=n2 inclui acessórios (>=2)", acc_count >= 2, f"acessorios count={acc_count}")
 
-# -------------------- F) Regressão com técnico --------------------
-print("\n========== F) REGRESSÃO (tecnico) ==========")
-ttoken = tokens.get("tecnico@valeteck.com")
-if not ttoken:
-    mark("regressão pré-req token tecnico", False, "sem token")
-else:
-    # /auth/me
-    r = get_with_token("/auth/me", ttoken)
-    mark("GET /auth/me → 200", r.status_code == 200, f"status={r.status_code}")
-    if r.status_code == 200:
-        u = r.json()
-        mark("tecnico.level == n1", u.get("level") == "n1", f"level={u.get('level')!r}")
-
-    # /appointments
-    r = get_with_token("/appointments", ttoken)
-    mark("GET /appointments → 200", r.status_code == 200, f"status={r.status_code}")
-    if r.status_code == 200:
+def run_section_D(token_tec: str):
+    print("\n=== D) GET /statement/me?month=invalido ===")
+    r = requests.get(
+        f"{BASE_URL}/statement/me",
+        params={"month": "invalido"},
+        headers=H(token_tec),
+        timeout=20,
+    )
+    log("D1 HTTP 400 p/ month inválido", r.status_code == 400,
+        f"status={r.status_code} body={r.text[:200]}")
+    try:
         body = r.json()
-        # aceita list ou {appointments:[...]}
-        count = len(body) if isinstance(body, list) else len(body.get("appointments", []) or body.get("items", []))
-        mark("appointments retornou lista não-vazia", count > 0, f"count={count}")
+        msg = str(body.get("detail", ""))
+        log("D2 mensagem PT-BR com 'month'", "month" in msg.lower() or "invalid" in msg.lower(),
+            f"detail={msg}")
+    except Exception as e:
+        log("D2 resposta JSON", False, str(e))
 
-    # /gamification/meta → target=60
-    r = get_with_token("/gamification/meta", ttoken)
-    mark("GET /gamification/meta → 200", r.status_code == 200, f"status={r.status_code}")
+
+def run_section_E(token_tec: str):
+    print("\n=== E) POST /checklists com service_type_code ===")
+    payload = {
+        "nome": "Teste",
+        "sobrenome": "SLA",
+        "placa": "TST1234",
+        "telefone": "",
+        "empresa": "Rastremix",
+        "equipamento": "Rastreador",
+        "tipo_atendimento": "Instalação",
+        "service_type_code": "instalacao_com_bloqueio",
+        "execution_elapsed_sec": 1500,   # 25 min — dentro dos 50 min do SLA
+        "status": "rascunho",
+    }
+    r = requests.post(
+        f"{BASE_URL}/checklists",
+        json=payload,
+        headers=H(token_tec),
+        timeout=20,
+    )
+    log("E1 POST HTTP 200", r.status_code == 200,
+        f"status={r.status_code} body={r.text[:400]}")
+    if r.status_code != 200:
+        return None
+    data = r.json()
+    cid = data.get("id")
+    log("E2 id retornado", bool(cid), f"id={cid}")
+
+    # GET confirmando snapshot SLA
+    g = requests.get(f"{BASE_URL}/checklists/{cid}", headers=H(token_tec), timeout=20)
+    log("E3 GET /checklists/{id} HTTP 200", g.status_code == 200,
+        f"status={g.status_code} body={g.text[:200]}")
+    if g.status_code != 200:
+        return cid
+    doc = g.json()
+    log("E4 service_type_code == instalacao_com_bloqueio",
+        doc.get("service_type_code") == "instalacao_com_bloqueio",
+        f"got={doc.get('service_type_code')}")
+    log("E5 service_type_name == 'Instalação C/ Bloqueio'",
+        doc.get("service_type_name") == "Instalação C/ Bloqueio",
+        f"got={doc.get('service_type_name')}")
+    log("E6 sla_max_minutes == 50", doc.get("sla_max_minutes") == 50,
+        f"got={doc.get('sla_max_minutes')}")
+    log("E7 sla_base_value == 5.0", float(doc.get("sla_base_value") or 0) == 5.0,
+        f"got={doc.get('sla_base_value')}")
+    log("E8 sla_within == true", doc.get("sla_within") is True,
+        f"got={doc.get('sla_within')}")
+    return cid
+
+
+def run_section_F(token_tec: str):
+    print("\n=== F) POST /checklists SEM service_type_code (backward compat) ===")
+    payload = {
+        "nome": "Legado",
+        "sobrenome": "Sem SLA",
+        "placa": "LEG5678",
+        "empresa": "Rastremix",
+        "equipamento": "Rastreador",
+        "tipo_atendimento": "Instalação",
+        "status": "rascunho",
+    }
+    r = requests.post(f"{BASE_URL}/checklists", json=payload, headers=H(token_tec), timeout=20)
+    log("F1 POST HTTP 200 sem service_type_code",
+        r.status_code == 200, f"status={r.status_code} body={r.text[:400]}")
+    if r.status_code != 200:
+        return
+    data = r.json()
+    log("F2 service_type_code defaults '' ",
+        (data.get("service_type_code") or "") == "",
+        f"got={data.get('service_type_code')!r}")
+    log("F3 service_type_name defaults '' ",
+        (data.get("service_type_name") or "") == "",
+        f"got={data.get('service_type_name')!r}")
+    log("F4 sla_max_minutes defaults 0",
+        (data.get("sla_max_minutes") or 0) == 0,
+        f"got={data.get('sla_max_minutes')!r}")
+    log("F5 sla_base_value defaults 0.0",
+        float(data.get("sla_base_value") or 0.0) == 0.0,
+        f"got={data.get('sla_base_value')!r}")
+    log("F6 sla_within defaults None/null",
+        data.get("sla_within") is None,
+        f"got={data.get('sla_within')!r}")
+
+
+def run_section_G(token_tec: str):
+    print("\n=== G) Regressão leve ===")
+    ep = [
+        ("/auth/me", {}, 200),
+        ("/gamification/meta", {}, 200),
+        ("/gamification/profile", {}, 200),
+        ("/inventory/me", {}, 200),
+        ("/reference/service-catalog", {}, 200),
+    ]
+    for path, params, expected in ep:
+        r = requests.get(
+            f"{BASE_URL}{path}", params=params, headers=H(token_tec), timeout=20
+        )
+        log(f"G {path}", r.status_code == expected,
+            f"status={r.status_code}")
+        if path == "/auth/me" and r.status_code == 200:
+            me = r.json()
+            log("G /auth/me.level presente", "level" in me,
+                f"keys={sorted(me.keys())[:8]}")
+            log("G /auth/me.tutor_id presente (pode ser null)",
+                "tutor_id" in me, f"tutor_id={me.get('tutor_id')!r}")
+
+    def _items(resp):
+        data = resp.json()
+        if isinstance(data, dict):
+            return data.get("items", data.get("catalog", []))
+        return data if isinstance(data, list) else []
+
+    # catalog counts
+    r = requests.get(f"{BASE_URL}/reference/service-catalog",
+                     headers=H(token_tec), timeout=20)
     if r.status_code == 200:
-        meta = r.json()
-        mark("gamification/meta.target == 60", meta.get("target") == 60, f"target={meta.get('target')!r}")
+        items = _items(r)
+        log("G catalog default == 11 itens",
+            len(items) == 11, f"len={len(items)}")
 
-    # /gamification/profile
-    r = get_with_token("/gamification/profile", ttoken)
-    mark("GET /gamification/profile → 200", r.status_code == 200, f"status={r.status_code}")
+    r = requests.get(
+        f"{BASE_URL}/reference/service-catalog",
+        params={"level": "junior"},
+        headers=H(token_tec), timeout=20,
+    )
+    log("G catalog?level=junior HTTP 200", r.status_code == 200,
+        f"status={r.status_code}")
     if r.status_code == 200:
-        prof = r.json()
-        lvl = prof.get("level") or {}
-        # Aceita formato {level:{number, name}} ou camelCase
-        has_num = isinstance(lvl, dict) and ("number" in lvl or "level_number" in lvl)
-        has_name = isinstance(lvl, dict) and ("name" in lvl or "level_name" in lvl)
-        mark("profile.level possui number", has_num, f"level={lvl!r}")
-        mark("profile.level possui name", has_name, f"level={lvl!r}")
+        items = _items(r)
+        log("G catalog?level=junior == 9 itens",
+            len(items) == 9, f"len={len(items)}")
 
-    # /inventory ou /inventory/me
-    r = get_with_token("/inventory", ttoken)
-    if r.status_code == 404:
-        r = get_with_token("/inventory/me", ttoken)
-        mark("GET /inventory/me → 200 (fallback)", r.status_code == 200, f"status={r.status_code}")
-    else:
-        mark("GET /inventory → 200", r.status_code == 200, f"status={r.status_code}")
 
-# -------------------- SUMMARY --------------------
-print("\n========== SUMMARY ==========")
-passed = sum(1 for _, ok, _ in results if ok)
-total = len(results)
-print(f"PASS: {passed}/{total}")
-fails = [(lbl, det) for lbl, ok, det in results if not ok]
-if fails:
-    print("\nFailed assertions:")
-    for lbl, det in fails:
-        print(f"  {FAIL} {lbl} :: {det}")
-    sys.exit(1)
-print("All PASS ✅")
+def main() -> int:
+    print(f"BASE_URL = {BASE_URL}")
+    print("Logging in as tecnico…")
+    token_tec = login(*TECNICO)
+
+    # A: mês atual tecnico
+    run_section_A(token_tec)
+    # B: junior
+    run_section_B()
+    # C: mês específico
+    run_section_C(token_tec)
+    # D: mês inválido
+    run_section_D(token_tec)
+    # E: POST checklists com service_type_code
+    run_section_E(token_tec)
+    # F: POST checklists sem service_type_code
+    run_section_F(token_tec)
+    # G: regressão leve
+    run_section_G(token_tec)
+
+    print("\n=== RESULT SUMMARY ===")
+    ok = sum(1 for _, c, _ in results if c)
+    total = len(results)
+    print(f"PASS: {ok}/{total}")
+    failures = [(n, e) for n, c, e in results if not c]
+    if failures:
+        print("\nFAILURES:")
+        for name, extra in failures:
+            print(f"  - {name}: {extra}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
