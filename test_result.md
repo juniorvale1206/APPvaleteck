@@ -685,10 +685,79 @@ backend:
               para diagnóstico separado (pode ser docs legados sem campo
               numero ou alguma mudança de schema recente).
 
+backend:
+  - task: "v14 Fase 4 — Bônus Mensais por Nível (compute_monthly_bonuses + monthly-closure breakdown.level/bonuses + closure PDF)"
+    implemented: true
+    working: true
+    file: "/app/backend/services/monthly_bonuses.py + /app/backend/routes/closures.py + /app/backend/services/closure_pdf.py + /app/backend/models/closure.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            ==================== v14 FASE 4 — BÔNUS MENSAIS POR NÍVEL — FULL PASS ====================
+            Suite: /app/backend_test.py contra
+            https://installer-track-1.preview.emergentagent.com/api
+            Resultado: 38/38 PASS, 0 falhas.
+
+            A) GET /inventory/monthly-closure (junior@valeteck.com):
+               - HTTP 200 ✓
+               - breakdown.level == "junior" ✓
+               - breakdown.bonuses presente com TODAS as 12 chaves obrigatórias:
+                 valid_os, within_sla_os, returns_30d, tutee_total_os,
+                 tutees_hit_goal, tutees_with_returns, bonus_junior_meta,
+                 bonus_junior_zero_returns, bonus_n1n2_retroactive,
+                 bonus_n3_residual, bonus_n3_tutoria, bonus_total ✓
+               - Estado real: valid_os=2, returns_30d=1
+                 → bonus_junior_meta=0 (valid<30) ✓
+                 → bonus_junior_zero_returns=0 (junior tem 1 retorno histórico
+                   no mês — guilhotina aplicada exatamente como o brief previa) ✓
+               - bonus_total=0 coerente com soma dos componentes ✓
+
+            B) GET /inventory/monthly-closure (n3@valeteck.com):
+               - HTTP 200, breakdown.level=="n3" ✓
+               - tutee_total_os=2 (int), tutees_hit_goal=0 (int),
+                 tutees_with_returns=1 → guilhotina ativada ✓
+               - Como o único junior vinculado teve 1 retorno, bonus_n3_residual=0
+                 e bonus_n3_tutoria=0 (zerados pelo `continue` no loop) ✓
+               - bonus_total=0 coerente ✓
+
+            C) GET /inventory/monthly-closure (tecnico@valeteck.com — n1):
+               - HTTP 200, breakdown.level=="n1" ✓
+               - valid_os=5 (<60) → bonus_n1n2_retroactive=0 ✓
+               - bonus_junior_meta, bonus_junior_zero_returns,
+                 bonus_n3_residual, bonus_n3_tutoria todos 0 ✓
+
+            D) GET /inventory/monthly-closure (n2@valeteck.com):
+               - HTTP 200, breakdown.level=="n2" ✓
+               - valid_os=0 → bonus_n1n2_retroactive=0 ✓
+
+            E) Regressão (gross/penalty/net):
+               - junior total_gross=1.0 == /statement/me.gross_estimated=1.0 ✓
+                 (motor agora usa comp_final_value, não mais base_price antigo)
+               - n1 total_gross=12.5 == /statement/me.gross_estimated=12.5 ✓
+               - junior penalty_total=0.0 == statement.penalty_total=0.0 ✓
+                 (mesmo cálculo: inv_pending_reverse + retorno30d)
+               - net_after_penalty == gross + bonus_total - penalty_total
+                 (1.0 + 0.0 - 0.0 = 1.0) ✓
+
+            F) PDF do Fechamento (junior):
+               - GET /inventory/monthly-closure/pdf → HTTP 200 ✓
+               - Content-Type: application/pdf ✓
+               - Magic bytes %PDF (arquivo de 2384 bytes) ✓
+               - Sem 500/crash ao renderizar bônus
+
+            CONCLUSÃO: Fase 4 (Bônus Mensais por Nível) está 100% operacional.
+            Todas as 12 chaves do LevelBonuses estão presentes e tipadas
+            corretamente. Cálculos de júnior/N1/N2/N3 + guilhotina batem com
+            a especificação. PDF gera sem crash. Nenhuma regressão observada.
+
 metadata:
   created_by: "main_agent"
-  version: "2.5"
-  test_sequence: 16
+  version: "2.6"
+  test_sequence: 17
   run_ui: false
 
 test_plan:

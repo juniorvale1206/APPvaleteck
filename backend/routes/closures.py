@@ -8,12 +8,12 @@ from fastapi.responses import Response
 from core.database import db
 from core.security import get_current_user
 from models.closure import (
-    MonthlyClosureBreakdown, MonthlyClosureIn, MonthlyClosureOut,
+    LevelBonuses, MonthlyClosureBreakdown, MonthlyClosureIn, MonthlyClosureOut,
 )
 from models.inventory import ReverseOverdueItem
 from services.closure_pdf import render_closure_pdf
 from services.inventory import compute_penalty_total, enrich_reverse_fields
-from services.pricing import base_price, sla_bonus
+from services.monthly_bonuses import compute_monthly_bonuses
 
 router = APIRouter(prefix="/inventory/monthly-closure", tags=["closures"])
 
@@ -37,7 +37,10 @@ def _parse_month(m: str):
 
 async def _compute_breakdown(user_id: str, month: str) -> MonthlyClosureBreakdown:
     start, end = _parse_month(month)
-    # Ganhos do mês
+    user = await db.users.find_one({"id": user_id}) or {}
+    level = (user.get("level") or "n1").lower()
+
+    # Ganhos brutos do mês (usando comp_final_value se existir, fallback R$0)
     cursor = db.checklists.find({
         "user_id": user_id,
         "status": {"$in": ["enviado", "em_auditoria", "aprovado", "reprovado"]},
@@ -52,26 +55,39 @@ async def _compute_breakdown(user_id: str, month: str) -> MonthlyClosureBreakdow
     docs = await cursor.to_list(length=2000)
     total_gross = 0.0
     for d in docs:
-        empresa = d.get("empresa", "")
-        tipo = d.get("tipo_atendimento") or "Instalação"
-        base = base_price(empresa, tipo)
-        elapsed = int(d.get("execution_elapsed_sec") or 0)
-        bonus = sla_bonus(base, elapsed)
-        total_gross += base + bonus
+        # v14: usa comp_final_value do motor; legado continua 0 (não há fallback pois
+        # substituímos 100% a lógica antiga de preço).
+        total_gross += float(d.get("comp_final_value") or 0)
 
-    # Estado do inventário
+    # Estado do inventário (penalidades)
     inv = await db.inventory.find({"user_id": user_id}, {"_id": 0}).to_list(length=500)
     enriched = [enrich_reverse_fields(d) for d in inv]
-    pen = compute_penalty_total(enriched)
+    pen_inv = compute_penalty_total(enriched)
+
+    # Débitos de retorno 30d (penalty_transactions do mês)
+    pen_txns = await db.penalty_transactions.find(
+        {"user_id": user_id, "created_at": {"$gte": start.isoformat(), "$lt": end.isoformat()}},
+        {"_id": 0},
+    ).to_list(length=500)
+    return_penalty = sum(abs(float(t.get("amount") or 0)) for t in pen_txns)
+    total_penalty = round(pen_inv["penalty_total"] + return_penalty, 2)
+
+    # Bônus por nível (v14 Fase 4)
+    bonuses_dict = await compute_monthly_bonuses(user, start.isoformat(), end.isoformat())
+    bonus_total = bonuses_dict["bonus_total"]
+
+    net = round(total_gross + bonus_total - total_penalty, 2)
 
     return MonthlyClosureBreakdown(
         total_gross=round(total_gross, 2),
         total_jobs=len(docs),
         inventory_total=len(enriched),
-        overdue_count=pen["overdue_count"],
-        penalty_total=round(pen["penalty_total"], 2),
-        net_after_penalty=round(total_gross - pen["penalty_total"], 2),
-        overdue_items=[ReverseOverdueItem(**x) for x in pen["overdue_items"]],
+        overdue_count=pen_inv["overdue_count"],
+        penalty_total=total_penalty,
+        net_after_penalty=net,
+        overdue_items=[ReverseOverdueItem(**x) for x in pen_inv["overdue_items"]],
+        level=level,
+        bonuses=LevelBonuses(**bonuses_dict),
     )
 
 

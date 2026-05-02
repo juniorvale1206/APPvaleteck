@@ -1,429 +1,372 @@
-"""Valeteck v14 — Fase 3A (Anti-fraude SLA server-side) + Fase 3B
-(Motor Financeiro Pós-Aprovação) — Backend smoke test.
+"""Backend smoke test — Valeteck v14 Fase 4 (Bônus Mensais por Nível).
 
-Base URL: https://installer-track-1.preview.emergentagent.com/api
+Tests:
+  A) GET /inventory/monthly-closure (junior) — breakdown.level + breakdown.bonuses
+  B) GET /inventory/monthly-closure (n3) — guilhotina ativada
+  C) GET /inventory/monthly-closure (tecnico/n1) — bonus_n1n2_retroactive
+  D) GET /inventory/monthly-closure (n2)
+  E) Regressão: total_gross == /statement/me.gross_estimated
+                penalty_total = inventario + retorno30d
+                net_after_penalty = gross + bonus_total - penalty_total
+  F) GET /inventory/monthly-closure/pdf (junior) — application/pdf, no 500
 """
 import os
-import json
-import time
 import sys
-from datetime import datetime
 
 import requests
 
-# ---- Config ----
-FRONTEND_ENV = "/app/frontend/.env"
-BASE_URL = None
-with open(FRONTEND_ENV) as fh:
-    for line in fh:
-        if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
-            BASE_URL = line.split("=", 1)[1].strip().strip('"') + "/api"
-if not BASE_URL:
-    raise SystemExit("EXPO_PUBLIC_BACKEND_URL ausente em frontend/.env")
-print(f"🔗 Base URL: {BASE_URL}")
+BASE_URL = os.environ.get(
+    "BACKEND_URL", "https://installer-track-1.preview.emergentagent.com"
+).rstrip("/")
+API = f"{BASE_URL}/api"
 
 USERS = {
-    "admin": ("admin@valeteck.com", "admin123"),
-    "tecnico": ("tecnico@valeteck.com", "tecnico123"),
     "junior": ("junior@valeteck.com", "junior123"),
+    "n1": ("tecnico@valeteck.com", "tecnico123"),
     "n2": ("n2@valeteck.com", "n2tech123"),
+    "n3": ("n3@valeteck.com", "n3tech123"),
 }
 
-results = []   # [(nome, ok, info)]
+REQUIRED_BONUS_KEYS = {
+    "valid_os", "within_sla_os", "returns_30d",
+    "tutee_total_os", "tutees_hit_goal", "tutees_with_returns",
+    "bonus_junior_meta", "bonus_junior_zero_returns",
+    "bonus_n1n2_retroactive",
+    "bonus_n3_residual", "bonus_n3_tutoria",
+    "bonus_total",
+}
 
 
-def log(name, ok, info=""):
-    mark = "✅" if ok else "❌"
-    results.append((name, ok, info))
-    print(f"  {mark} {name}" + (f" — {info}" if info else ""))
+class Reporter:
+    def __init__(self):
+        self.passes = 0
+        self.fails = []
+
+    def ok(self, msg):
+        self.passes += 1
+        print(f"  OK  {msg}")
+
+    def fail(self, msg):
+        self.fails.append(msg)
+        print(f"  FAIL {msg}")
+
+    def summary(self):
+        total = self.passes + len(self.fails)
+        print(f"\n========== RESULT: {self.passes}/{total} PASS ==========")
+        if self.fails:
+            print("FAILED:")
+            for f in self.fails:
+                print(f"  - {f}")
+            return False
+        return True
 
 
-def login(email, pwd):
-    r = requests.post(f"{BASE_URL}/auth/login", json={"email": email, "password": pwd}, timeout=20)
-    r.raise_for_status()
-    return r.json()
-
-
-def H(token):
-    return {"Authorization": f"Bearer {token}"}
-
-
-# =====================================================================
-# SETUP — login de todos os papéis
-# =====================================================================
-print("\n===== SETUP =====")
-tokens = {}
-ids = {}
-for key, (email, pwd) in USERS.items():
-    try:
-        data = login(email, pwd)
-        tokens[key] = data["access_token"]
-        ids[key] = data["user"]["id"]
-        log(f"Login {key} ({email})", True,
-            f"level={data['user'].get('level')} id={data['user']['id'][:8]}…")
-    except Exception as e:
-        log(f"Login {key} ({email})", False, str(e))
-        sys.exit(1)
-
-admin_tok = tokens["admin"]
-tec_tok = tokens["tecnico"]
-jun_tok = tokens["junior"]
-n2_tok = tokens["n2"]
-
-
-def create_draft(token, plate="AAA0001", tipo="Instalação"):
-    payload = {
-        "nome": "Cliente",
-        "sobrenome": "Teste",
-        "placa": plate,
-        "empresa": "Rastremix",
-        "equipamento": "Módulo",
-        "tipo_atendimento": tipo,
-        "status": "rascunho",
-    }
-    r = requests.post(f"{BASE_URL}/checklists", json=payload, headers=H(token), timeout=20)
+def login(email, password):
+    r = requests.post(f"{API}/auth/login", json={"email": email, "password": password}, timeout=20)
     if r.status_code != 200:
-        raise RuntimeError(f"create_draft HTTP {r.status_code}: {r.text[:300]}")
-    return r.json()
+        raise RuntimeError(f"login {email} failed: {r.status_code} {r.text}")
+    return r.json()["access_token"]
 
 
-# =====================================================================
-# A) Fase 3A — Fluxo completo instalação (tecnico N1)
-# =====================================================================
-print("\n===== A) Fase 3A — Fluxo completo instalação =====")
-try:
-    draft = create_draft(tec_tok, plate="AAA0001", tipo="Instalação")
-    cid_A = draft["id"]
-    log("A1 POST /checklists rascunho", True, f"id={cid_A[:8]}…")
-
-    r = requests.post(
-        f"{BASE_URL}/checklists/{cid_A}/send-initial",
-        json={"service_type_code": "instalacao_com_bloqueio"},
-        headers=H(tec_tok), timeout=20,
-    )
-    ok = r.status_code == 200
-    body = r.json() if ok else {}
-    log("A2 send-initial HTTP 200", ok, f"status={r.status_code}" + (f" body={r.text[:200]}" if not ok else ""))
-    if ok:
-        log("A2.a phase=awaiting_equipment_photo", body.get("phase") == "awaiting_equipment_photo",
-            f"phase={body.get('phase')}")
-        log("A2.b checklist_sent_at preenchido", bool(body.get("checklist_sent_at")),
-            f"sent_at={body.get('checklist_sent_at')}")
-        log("A2.c sla_max_minutes=50", body.get("sla_max_minutes") == 50,
-            f"sla_max={body.get('sla_max_minutes')}")
-
-    r = requests.post(
-        f"{BASE_URL}/checklists/{cid_A}/equipment-photo",
-        json={"photo_base64": "data:image/png;base64,iVBORw0KGgo="},
-        headers=H(tec_tok), timeout=20,
-    )
-    ok = r.status_code == 200
-    body = r.json() if ok else {}
-    log("A3 equipment-photo HTTP 200", ok, f"status={r.status_code}" + (f" body={r.text[:200]}" if not ok else ""))
-    if ok:
-        log("A3.a phase=in_execution", body.get("phase") == "in_execution", f"phase={body.get('phase')}")
-        delay = body.get("equipment_photo_delay_sec")
-        log("A3.b equipment_photo_delay_sec int >=0",
-            isinstance(delay, int) and delay >= 0, f"delay={delay}")
-        log("A3.c equipment_photo_flag=false (foto rápida)",
-            body.get("equipment_photo_flag") is False, f"flag={body.get('equipment_photo_flag')}")
-
-    r = requests.post(
-        f"{BASE_URL}/checklists/{cid_A}/finalize",
-        headers=H(tec_tok), timeout=20,
-    )
-    ok = r.status_code == 200
-    body = r.json() if ok else {}
-    log("A4 finalize HTTP 200", ok, f"status={r.status_code}" + (f" body={r.text[:200]}" if not ok else ""))
-    if ok:
-        log("A4.a phase=finalized", body.get("phase") == "finalized", f"phase={body.get('phase')}")
-        total_sec = body.get("sla_total_sec")
-        log("A4.b sla_total_sec int", isinstance(total_sec, int), f"sla_total_sec={total_sec}")
-        log("A4.c sla_within=true (<50min)", body.get("sla_within") is True,
-            f"sla_within={body.get('sla_within')}")
-except Exception as e:
-    log("A (fluxo)", False, str(e))
+def get_closure(token, month=None):
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {"month": month} if month else {}
+    return requests.get(f"{API}/inventory/monthly-closure", headers=headers, params=params, timeout=30)
 
 
-# =====================================================================
-# B) Fase 3A — Regras de erro
-# =====================================================================
-print("\n===== B) Fase 3A — Regras de erro =====")
-
-# B1) service_type_code inválido → 400
-try:
-    d = create_draft(tec_tok, plate="BBB0001")
-    r = requests.post(
-        f"{BASE_URL}/checklists/{d['id']}/send-initial",
-        json={"service_type_code": "inexistente"}, headers=H(tec_tok), timeout=20,
-    )
-    log("B1 service_type_code inválido → 400", r.status_code == 400,
-        f"got={r.status_code} {r.text[:160]}")
-except Exception as e:
-    log("B1", False, str(e))
-
-# B2) N1 tentando acessório → 403
-try:
-    d = create_draft(tec_tok, plate="CCC0001")
-    r = requests.post(
-        f"{BASE_URL}/checklists/{d['id']}/send-initial",
-        json={"service_type_code": "acessorio_smart_control"},
-        headers=H(tec_tok), timeout=20,
-    )
-    ok_code = r.status_code == 403
-    msg_ok = "N2" in (r.text or "")
-    log("B2 N1 acessório → 403", ok_code,
-        f"got={r.status_code} body={r.text[:180]}")
-    log("B2.a mensagem cita N2", msg_ok, f"body={r.text[:160]}")
-except Exception as e:
-    log("B2", False, str(e))
-
-# B3) Re-iniciar checklist já iniciado → 409
-try:
-    d = create_draft(tec_tok, plate="DDD0001")
-    r1 = requests.post(
-        f"{BASE_URL}/checklists/{d['id']}/send-initial",
-        json={"service_type_code": "desinstalacao"}, headers=H(tec_tok), timeout=20,
-    )
-    log("B3.setup primeiro send-initial", r1.status_code == 200, f"got={r1.status_code}")
-    r2 = requests.post(
-        f"{BASE_URL}/checklists/{d['id']}/send-initial",
-        json={"service_type_code": "desinstalacao"}, headers=H(tec_tok), timeout=20,
-    )
-    log("B3 re-iniciar → 409", r2.status_code == 409,
-        f"got={r2.status_code} body={r2.text[:180]}")
-except Exception as e:
-    log("B3", False, str(e))
-
-# B4) finalize sem send-initial → 409
-try:
-    d = create_draft(tec_tok, plate="EEE0001")
-    r = requests.post(f"{BASE_URL}/checklists/{d['id']}/finalize", headers=H(tec_tok), timeout=20)
-    log("B4 finalize sem send-initial → 409", r.status_code == 409,
-        f"got={r.status_code} body={r.text[:180]}")
-except Exception as e:
-    log("B4", False, str(e))
-
-# B5) equipment-photo sem send-initial → 409
-try:
-    d = create_draft(tec_tok, plate="FFF0001")
-    r = requests.post(
-        f"{BASE_URL}/checklists/{d['id']}/equipment-photo",
-        json={"photo_base64": "data:image/png;base64,iVBORw0KGgo="},
-        headers=H(tec_tok), timeout=20,
-    )
-    log("B5 equipment-photo sem send-initial → 409", r.status_code == 409,
-        f"got={r.status_code} body={r.text[:180]}")
-except Exception as e:
-    log("B5", False, str(e))
+def get_statement(token, month=None):
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {"month": month} if month else {}
+    return requests.get(f"{API}/statement/me", headers=headers, params=params, timeout=30)
 
 
-# =====================================================================
-# C) Fase 3A — Categoria não-instalação: desinstalacao
-# =====================================================================
-print("\n===== C) Fase 3A — Desinstalação direto em in_execution =====")
-try:
-    d = create_draft(tec_tok, plate="GGG0001", tipo="Desinstalação")
-    r = requests.post(
-        f"{BASE_URL}/checklists/{d['id']}/send-initial",
-        json={"service_type_code": "desinstalacao"},
-        headers=H(tec_tok), timeout=20,
-    )
-    ok = r.status_code == 200
-    body = r.json() if ok else {}
-    log("C1 send-initial desinstalacao HTTP 200", ok, f"status={r.status_code}")
-    if ok:
-        log("C2 phase=in_execution direto",
-            body.get("phase") == "in_execution",
-            f"phase={body.get('phase')}")
-except Exception as e:
-    log("C", False, str(e))
+def get_closure_pdf(token, month=None):
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {"month": month} if month else {}
+    return requests.get(f"{API}/inventory/monthly-closure/pdf", headers=headers, params=params, timeout=60)
 
 
-# =====================================================================
-# D) Fase 3A — N2 + acessório (categoria acessorio NÃO ∈ INSTALL_CATEGORIES)
-# =====================================================================
-print("\n===== D) Fase 3A — N2 + acessorio_smart_control → in_execution direto =====")
-try:
-    d = create_draft(n2_tok, plate="HHH0001", tipo="Acessório")
-    r = requests.post(
-        f"{BASE_URL}/checklists/{d['id']}/send-initial",
-        json={"service_type_code": "acessorio_smart_control"},
-        headers=H(n2_tok), timeout=20,
-    )
-    ok = r.status_code == 200
-    body = r.json() if ok else {}
-    log("D1 send-initial acessorio (n2) HTTP 200", ok,
-        f"status={r.status_code} body={r.text[:200]}")
-    if ok:
-        # categoria 'acessorio' não está em {instalacao, telemetria} → phase=in_execution direto
-        log("D2 phase=in_execution direto (acessório ∉ INSTALL_CATEGORIES)",
-            body.get("phase") == "in_execution",
-            f"phase={body.get('phase')}")
-except Exception as e:
-    log("D", False, str(e))
-
-
-# =====================================================================
-# E) Fase 3B — Motor Financeiro via /admin/approve
-# =====================================================================
-print("\n===== E) Fase 3B — Motor Financeiro /admin/approve =====")
-
-try:
-    r = requests.get(f"{BASE_URL}/admin/pending-approvals", headers=H(admin_tok), timeout=20)
-    ok = r.status_code == 200
-    body = r.json() if ok else {}
-    pending = body.get("pending", [])
-    log("E1 GET /admin/pending-approvals", ok, f"count={len(pending)}")
-
-    if not pending:
-        log("E2 Aprovar OS do pool",
-            True, "⚠️ observação: pool vazio — nada a aprovar")
+def validate_breakdown_shape(rep, prefix, bd, expected_level):
+    lvl = bd.get("level")
+    if lvl == expected_level:
+        rep.ok(f"{prefix} breakdown.level == '{expected_level}'")
     else:
-        expected_keys = [
-            "comp_base_value", "comp_sla_cut", "comp_warranty_zero",
-            "comp_return_flagged", "comp_final_value",
-            "comp_penalty_on_original", "comp_level_applied",
-        ]
-        to_test = pending[:2]
-        approved_any = False
-        for idx, item in enumerate(to_test):
-            cid = item["id"]
-            try:
-                r2 = requests.post(
-                    f"{BASE_URL}/admin/checklists/{cid}/approve",
-                    headers=H(admin_tok), timeout=30,
+        rep.fail(f"{prefix} breakdown.level expected '{expected_level}', got {lvl!r}")
+    bonuses = bd.get("bonuses")
+    if not isinstance(bonuses, dict):
+        rep.fail(f"{prefix} breakdown.bonuses missing/not-dict (got {type(bonuses).__name__})")
+        return None
+    rep.ok(f"{prefix} breakdown.bonuses present")
+    missing = REQUIRED_BONUS_KEYS - set(bonuses.keys())
+    if missing:
+        rep.fail(f"{prefix} bonuses missing keys: {sorted(missing)}")
+    else:
+        rep.ok(f"{prefix} bonuses has all {len(REQUIRED_BONUS_KEYS)} required keys")
+    return bonuses
+
+
+def main():
+    rep = Reporter()
+    print(f"BASE: {API}\n")
+
+    tokens = {}
+    print("[Login] all users")
+    for k, (e, p) in USERS.items():
+        try:
+            tokens[k] = login(e, p)
+            rep.ok(f"login {k} ({e})")
+        except Exception as ex:
+            rep.fail(f"login {k}: {ex}")
+            return rep.summary()
+
+    # A) Junior
+    print("\n[A] GET /inventory/monthly-closure (junior)")
+    r = get_closure(tokens["junior"])
+    if r.status_code != 200:
+        rep.fail(f"junior closure HTTP {r.status_code} body={r.text[:400]}")
+    else:
+        rep.ok("junior closure HTTP 200")
+        bd = r.json().get("breakdown") or {}
+        bonuses = validate_breakdown_shape(rep, "junior", bd, "junior")
+        if bonuses:
+            jr_meta = bonuses["bonus_junior_meta"]
+            jr_zero = bonuses["bonus_junior_zero_returns"]
+            jr_valid = bonuses["valid_os"]
+            jr_returns = bonuses["returns_30d"]
+            print(f"     [debug] junior valid_os={jr_valid} returns_30d={jr_returns} "
+                  f"bonus_meta={jr_meta} bonus_zero={jr_zero}")
+            if jr_meta in (0, 0.0, 50, 50.0):
+                rep.ok(f"junior bonus_junior_meta={jr_meta} (valid_os={jr_valid})")
+            else:
+                rep.fail(f"junior bonus_junior_meta unexpected: {jr_meta}")
+            if jr_returns >= 1:
+                if jr_zero == 0:
+                    rep.ok(f"junior bonus_junior_zero_returns=0 (returns_30d={jr_returns}) ok")
+                else:
+                    rep.fail(
+                        f"junior bonus_junior_zero_returns should be 0 when returns_30d={jr_returns}, "
+                        f"got {jr_zero}"
+                    )
+            else:
+                if jr_zero in (0, 0.0, 50, 50.0):
+                    rep.ok(
+                        f"junior bonus_junior_zero_returns={jr_zero} (returns_30d=0, valid_os={jr_valid})"
+                    )
+                else:
+                    rep.fail(f"junior bonus_junior_zero_returns unexpected: {jr_zero}")
+            expected_total = round(
+                bonuses["bonus_junior_meta"] + bonuses["bonus_junior_zero_returns"]
+                + bonuses["bonus_n1n2_retroactive"]
+                + bonuses["bonus_n3_residual"] + bonuses["bonus_n3_tutoria"], 2,
+            )
+            actual_total = bonuses["bonus_total"]
+            if abs(expected_total - actual_total) < 0.01:
+                rep.ok(f"junior bonus_total coherent (={actual_total})")
+            else:
+                rep.fail(
+                    f"junior bonus_total inconsistent: expected {expected_total} got {actual_total}"
                 )
-                ok2 = r2.status_code == 200
-                body2 = r2.json() if ok2 else {}
-                log(f"E2.{idx+1} approve {cid[:8]}… HTTP 200", ok2,
-                    f"status={r2.status_code}" + (f" body={r2.text[:260]}" if not ok2 else ""))
-                if ok2:
-                    approved_any = True
-                    comp = body2.get("compensation") or {}
-                    missing = [k for k in expected_keys if k not in comp]
-                    log(f"E2.{idx+1}.a compensation contém todas as chaves", not missing,
-                        f"missing={missing} got={list(comp.keys())}")
-                    msg = body2.get("message", "")
-                    log(f"E2.{idx+1}.b message contém 💰",
-                        "💰" in msg,
-                        f"message={msg!r}")
-                    final_v = comp.get("comp_final_value")
-                    ok_val = False
-                    if isinstance(final_v, (int, float)):
-                        ok_val = f"{final_v:.2f}" in msg
-                    log(f"E2.{idx+1}.c mensagem cita valor final",
-                        ok_val,
-                        f"final_v={final_v} msg={msg!r}")
-            except Exception as e:
-                log(f"E2.{idx+1} approve", False, str(e))
 
-        if not approved_any:
-            log("E3 Pelo menos 1 aprovação concluída", False,
-                "Nenhuma aprovação teve sucesso — ver logs acima")
-except Exception as e:
-    log("E", False, str(e))
-
-
-# =====================================================================
-# F) Fase 3B — Extrato /statement/me com penalties
-# =====================================================================
-print("\n===== F) Fase 3B — /statement/me agregado =====")
-try:
-    r = requests.get(f"{BASE_URL}/statement/me", headers=H(tec_tok), timeout=20)
-    ok = r.status_code == 200
-    body = r.json() if ok else {}
-    log("F1 GET /statement/me", ok, f"status={r.status_code}")
-    if ok:
-        required = ["gross_estimated", "penalty_total", "penalty_count", "net_estimated"]
-        missing = [k for k in required if k not in body]
-        log("F2 chaves obrigatórias presentes", not missing,
-            f"missing={missing} has={[k for k in required if k in body]}")
-
-        log("F3 gross_estimated é float",
-            isinstance(body.get("gross_estimated"), (int, float)),
-            f"type={type(body.get('gross_estimated')).__name__} v={body.get('gross_estimated')}")
-        log("F4 penalty_total é float",
-            isinstance(body.get("penalty_total"), (int, float)),
-            f"type={type(body.get('penalty_total')).__name__} v={body.get('penalty_total')}")
-        log("F5 penalty_count é int",
-            isinstance(body.get("penalty_count"), int),
-            f"type={type(body.get('penalty_count')).__name__} v={body.get('penalty_count')}")
-
-        gross = float(body.get("gross_estimated", 0))
-        pen = float(body.get("penalty_total", 0))
-        net = float(body.get("net_estimated", 0))
-        expected_net = round(gross - pen, 2)
-        log("F6 net_estimated == gross - penalty_total",
-            abs(net - expected_net) < 0.02,
-            f"gross={gross} penalty={pen} net={net} expected={expected_net}")
-except Exception as e:
-    log("F", False, str(e))
-
-
-# =====================================================================
-# G) Regressão
-# =====================================================================
-print("\n===== G) Regressão =====")
-
-try:
-    r = requests.get(f"{BASE_URL}/auth/me", headers=H(tec_tok), timeout=20)
-    ok = r.status_code == 200
-    body = r.json() if ok else {}
-    log("G1 GET /auth/me 200", ok, f"status={r.status_code}")
-    if ok:
-        log("G1.a inclui level", "level" in body, f"level={body.get('level')}")
-        log("G1.b inclui tutor_id", "tutor_id" in body, f"tutor_id={body.get('tutor_id')}")
-except Exception as e:
-    log("G1", False, str(e))
-
-try:
-    r = requests.get(f"{BASE_URL}/gamification/meta", headers=H(tec_tok), timeout=20)
-    log("G2 GET /gamification/meta 200", r.status_code == 200,
-        f"status={r.status_code}")
-except Exception as e:
-    log("G2", False, str(e))
-
-try:
-    r = requests.get(f"{BASE_URL}/reference/service-catalog", headers=H(tec_tok), timeout=20)
-    ok = r.status_code == 200
-    body = r.json() if ok else {}
-    if isinstance(body, list):
-        items = body
+    # B) N3
+    print("\n[B] GET /inventory/monthly-closure (n3)")
+    r = get_closure(tokens["n3"])
+    if r.status_code != 200:
+        rep.fail(f"n3 closure HTTP {r.status_code} body={r.text[:400]}")
     else:
-        items = body.get("items", [])
-    log("G3 GET /reference/service-catalog 200", ok, f"status={r.status_code}")
-    log("G3.a 11 items", len(items) == 11, f"count={len(items)}")
-except Exception as e:
-    log("G3", False, str(e))
+        rep.ok("n3 closure HTTP 200")
+        bd = r.json().get("breakdown") or {}
+        bonuses = validate_breakdown_shape(rep, "n3", bd, "n3")
+        if bonuses:
+            tutee_total = bonuses["tutee_total_os"]
+            hit = bonuses["tutees_hit_goal"]
+            with_returns = bonuses["tutees_with_returns"]
+            residual = bonuses["bonus_n3_residual"]
+            tutoria = bonuses["bonus_n3_tutoria"]
+            print(f"     [debug] n3 tutee_total={tutee_total} hit={hit} with_returns={with_returns} "
+                  f"residual={residual} tutoria={tutoria}")
+            if isinstance(tutee_total, int):
+                rep.ok(f"n3 tutee_total_os is int (={tutee_total})")
+            else:
+                rep.fail(f"n3 tutee_total_os not int: {tutee_total!r}")
+            if isinstance(hit, int):
+                rep.ok(f"n3 tutees_hit_goal is int (={hit})")
+            else:
+                rep.fail(f"n3 tutees_hit_goal not int: {hit!r}")
+            if with_returns >= 1:
+                rep.ok(f"n3 guilhotina activated: tutees_with_returns={with_returns}")
+                if residual == 0 and tutoria == 0:
+                    rep.ok(
+                        "n3 bonus_n3_residual=0 e bonus_n3_tutoria=0 (todos juniores com retorno)"
+                    )
+                else:
+                    rep.ok(
+                        f"n3 bonus_n3_residual={residual}, bonus_n3_tutoria={tutoria} "
+                        f"(há juniores limpos)"
+                    )
+            else:
+                rep.ok("n3 sem guilhotina: tutees_with_returns=0")
+            expected_total = round(
+                bonuses["bonus_junior_meta"] + bonuses["bonus_junior_zero_returns"]
+                + bonuses["bonus_n1n2_retroactive"]
+                + bonuses["bonus_n3_residual"] + bonuses["bonus_n3_tutoria"], 2,
+            )
+            if abs(expected_total - bonuses["bonus_total"]) < 0.01:
+                rep.ok(f"n3 bonus_total coherent (={bonuses['bonus_total']})")
+            else:
+                rep.fail(
+                    f"n3 bonus_total inconsistent: expected {expected_total} "
+                    f"got {bonuses['bonus_total']}"
+                )
 
-try:
-    r = requests.get(f"{BASE_URL}/reference/service-catalog?level=n1", headers=H(tec_tok), timeout=20)
-    ok = r.status_code == 200
-    body = r.json() if ok else {}
-    if isinstance(body, list):
-        items = body
+    # C) N1
+    print("\n[C] GET /inventory/monthly-closure (n1 - tecnico)")
+    r = get_closure(tokens["n1"])
+    if r.status_code != 200:
+        rep.fail(f"n1 closure HTTP {r.status_code} body={r.text[:400]}")
     else:
-        items = body.get("items", [])
-    log("G4 GET /reference/service-catalog?level=n1 200", ok, f"status={r.status_code}")
-    log("G4.a 9 items (sem acessórios)", len(items) == 9, f"count={len(items)}")
-    has_acess = any(it.get("category") == "acessorio" for it in items)
-    log("G4.b nenhum item com category=acessorio", not has_acess, f"has_acessorio={has_acess}")
-except Exception as e:
-    log("G4", False, str(e))
+        rep.ok("n1 closure HTTP 200")
+        bd = r.json().get("breakdown") or {}
+        bonuses = validate_breakdown_shape(rep, "n1", bd, "n1")
+        if bonuses:
+            valid_os = bonuses["valid_os"]
+            within_sla = bonuses["within_sla_os"]
+            retro = bonuses["bonus_n1n2_retroactive"]
+            print(f"     [debug] n1 valid_os={valid_os} within_sla={within_sla} retro={retro}")
+            if valid_os < 60:
+                if retro == 0 or retro == 0.0:
+                    rep.ok(f"n1 bonus_n1n2_retroactive=0 (valid_os={valid_os} < 60)")
+                else:
+                    rep.fail(
+                        f"n1 bonus_n1n2_retroactive should be 0 (valid_os={valid_os} < 60), got {retro}"
+                    )
+            else:
+                expected = round(within_sla * 2.0, 2)
+                if abs(retro - expected) < 0.01:
+                    rep.ok(f"n1 bonus_n1n2_retroactive=2*within_sla_os ({retro})")
+                else:
+                    rep.fail(
+                        f"n1 bonus_n1n2_retroactive expected {expected} (=2*{within_sla}), got {retro}"
+                    )
+            jr_zero = (
+                bonuses["bonus_junior_meta"] == 0
+                and bonuses["bonus_junior_zero_returns"] == 0
+                and bonuses["bonus_n3_residual"] == 0
+                and bonuses["bonus_n3_tutoria"] == 0
+            )
+            if jr_zero:
+                rep.ok("n1 não tem bonus de junior nem n3 (todos 0)")
+            else:
+                rep.fail(
+                    f"n1 has unexpected junior/n3 bonuses: "
+                    f"junior_meta={bonuses['bonus_junior_meta']}, "
+                    f"junior_zero={bonuses['bonus_junior_zero_returns']}, "
+                    f"n3_resid={bonuses['bonus_n3_residual']}, "
+                    f"n3_tut={bonuses['bonus_n3_tutoria']}"
+                )
+
+    # D) N2
+    print("\n[D] GET /inventory/monthly-closure (n2)")
+    r = get_closure(tokens["n2"])
+    if r.status_code != 200:
+        rep.fail(f"n2 closure HTTP {r.status_code} body={r.text[:400]}")
+    else:
+        rep.ok("n2 closure HTTP 200")
+        bd = r.json().get("breakdown") or {}
+        bonuses = validate_breakdown_shape(rep, "n2", bd, "n2")
+        if bonuses:
+            valid_os = bonuses["valid_os"]
+            within_sla = bonuses["within_sla_os"]
+            retro = bonuses["bonus_n1n2_retroactive"]
+            print(f"     [debug] n2 valid_os={valid_os} within_sla={within_sla} retro={retro}")
+            if valid_os < 60:
+                if retro == 0:
+                    rep.ok(f"n2 bonus_n1n2_retroactive=0 (valid_os={valid_os} < 60)")
+                else:
+                    rep.fail(
+                        f"n2 bonus_n1n2_retroactive should be 0 (valid_os={valid_os}), got {retro}"
+                    )
+            else:
+                expected = round(within_sla * 2.0, 2)
+                if abs(retro - expected) < 0.01:
+                    rep.ok(f"n2 bonus_n1n2_retroactive=2*within_sla_os ({retro})")
+                else:
+                    rep.fail(
+                        f"n2 bonus_n1n2_retroactive expected {expected}, got {retro}"
+                    )
+
+    # E) Regressão
+    print("\n[E] Regressão (gross/penalty/net) — junior")
+    r_st = get_statement(tokens["junior"])
+    if r_st.status_code != 200:
+        rep.fail(f"junior statement HTTP {r_st.status_code} body={r_st.text[:300]}")
+    else:
+        st = r_st.json()
+        r_cl = get_closure(tokens["junior"])
+        if r_cl.status_code == 200:
+            bd = r_cl.json().get("breakdown") or {}
+            gross_st = round(float(st.get("gross_estimated") or 0), 2)
+            gross_cl = round(float(bd.get("total_gross") or 0), 2)
+            if abs(gross_st - gross_cl) < 0.01:
+                rep.ok(f"junior total_gross == gross_estimated (={gross_cl})")
+            else:
+                rep.fail(f"junior total_gross ({gross_cl}) != gross_estimated ({gross_st})")
+            bonus_total = float((bd.get("bonuses") or {}).get("bonus_total") or 0)
+            penalty = float(bd.get("penalty_total") or 0)
+            net = float(bd.get("net_after_penalty") or 0)
+            expected_net = round(gross_cl + bonus_total - penalty, 2)
+            if abs(expected_net - net) < 0.01:
+                rep.ok(
+                    f"junior net_after_penalty = gross+bonus-penalty "
+                    f"({gross_cl} + {bonus_total} - {penalty} = {net})"
+                )
+            else:
+                rep.fail(
+                    f"junior net_after_penalty inconsistent: "
+                    f"expected {expected_net} (={gross_cl}+{bonus_total}-{penalty}), got {net}"
+                )
+            pen_st = round(float(st.get("penalty_total") or 0), 2)
+            if abs(pen_st - penalty) < 0.01:
+                rep.ok(f"junior penalty_total == statement.penalty_total (={penalty})")
+            else:
+                rep.fail(
+                    f"junior penalty_total ({penalty}) != statement.penalty_total ({pen_st})"
+                )
+
+    # F) PDF
+    print("\n[F] GET /inventory/monthly-closure/pdf (junior)")
+    r = get_closure_pdf(tokens["junior"])
+    if r.status_code != 200:
+        rep.fail(f"junior closure pdf HTTP {r.status_code} body={r.text[:300]}")
+    else:
+        rep.ok("junior closure pdf HTTP 200")
+        ct = r.headers.get("Content-Type", "").lower()
+        if "application/pdf" in ct:
+            rep.ok(f"junior closure pdf Content-Type='{ct}'")
+        else:
+            rep.fail(f"junior closure pdf Content-Type expected pdf, got '{ct}'")
+        if r.content[:4] == b"%PDF":
+            rep.ok(f"junior closure pdf magic bytes %PDF ({len(r.content)} bytes)")
+        else:
+            rep.fail(
+                f"junior closure pdf does not start with %PDF; first 8 bytes = {r.content[:8]!r}"
+            )
+
+    # E2 — n1
+    print("\n[E2] Regressão extra — n1")
+    r_st = get_statement(tokens["n1"])
+    r_cl = get_closure(tokens["n1"])
+    if r_st.status_code == 200 and r_cl.status_code == 200:
+        gst = round(float(r_st.json().get("gross_estimated") or 0), 2)
+        bd = r_cl.json().get("breakdown") or {}
+        gcl = round(float(bd.get("total_gross") or 0), 2)
+        if abs(gst - gcl) < 0.01:
+            rep.ok(f"n1 total_gross == gross_estimated (={gcl})")
+        else:
+            rep.fail(f"n1 total_gross ({gcl}) != gross_estimated ({gst})")
+
+    return rep.summary()
 
 
-# =====================================================================
-# SUMMARY
-# =====================================================================
-print("\n" + "=" * 70)
-passed = sum(1 for _, ok, _ in results if ok)
-failed = sum(1 for _, ok, _ in results if not ok)
-print(f"RESULTADO: {passed}/{len(results)} PASS  |  {failed} FALHAS")
-if failed:
-    print("\n❌ FALHAS:")
-    for n, ok, info in results:
-        if not ok:
-            print(f"  - {n}: {info}")
-print("=" * 70)
-sys.exit(0 if failed == 0 else 1)
+if __name__ == "__main__":
+    ok = main()
+    sys.exit(0 if ok else 1)

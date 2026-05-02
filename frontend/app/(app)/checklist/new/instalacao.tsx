@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, KeyboardAvoidingView, Platform } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, KeyboardAvoidingView, Platform, Alert } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -72,6 +72,50 @@ export default function StepInstalacao() {
     setErrors(er);
     if (Object.keys(er).length) return;
     router.push("/(app)/checklist/new/evidencias");
+  };
+
+  // v14 Fase 3A — Envia Checklist Inicial ao servidor e navega para /execucao
+  const sendInitialAndExecute = async () => {
+    const er: Record<string, string> = {};
+    if (!draft.service_type_code) er.service_type_code = "Selecione o tipo de serviço";
+    if (!draft.empresa) er.empresa = "Obrigatório";
+    if (!draft.equipamento) er.equipamento = "Obrigatório";
+    if (!draft.nome || !draft.placa) er.nome = "Preencha Cliente na etapa anterior";
+    setErrors(er);
+    if (Object.keys(er).length) {
+      Alert.alert("Campos obrigatórios", Object.values(er).join("\n"));
+      return;
+    }
+    try {
+      // 1) Salva o rascunho no servidor
+      const base = {
+        status: "rascunho",
+        nome: draft.nome, sobrenome: draft.sobrenome, cpf: draft.cpf,
+        placa: draft.placa, telefone: draft.telefone, obs_iniciais: draft.obs_iniciais,
+        problems_client: draft.problems_client, problems_client_other: draft.problems_client_other,
+        empresa: draft.empresa, equipamento: draft.equipamento,
+        tipo_atendimento: draft.tipo_atendimento || "Instalação",
+        vehicle_type: draft.vehicle_type, vehicle_brand: draft.vehicle_brand,
+        vehicle_model: draft.vehicle_model, vehicle_year: draft.vehicle_year,
+        vehicle_color: draft.vehicle_color, vehicle_vin: draft.vehicle_vin,
+        acessorios: draft.acessorios,
+        battery_state: draft.battery_state,
+        battery_voltage: voltageNum,
+        imei: draft.imei, iccid: draft.iccid,
+        obs_tecnicas: draft.obs_tecnicas,
+        service_type_code: draft.service_type_code,
+        photos: [],
+      };
+      const { data: created } = await api.post<any>("/checklists", base);
+      // 2) Inicia o SLA server-side
+      await api.post(`/checklists/${created.id}/send-initial`, {
+        service_type_code: draft.service_type_code,
+      });
+      // 3) Vai para tela de execução
+      router.replace({ pathname: "/(app)/checklist/execucao/[id]", params: { id: created.id } });
+    } catch (e: any) {
+      Alert.alert("Erro", e?.response?.data?.detail || e?.message || "Falha ao enviar checklist inicial");
+    }
   };
 
   const voltageNum = draft.battery_voltage ? parseFloat(draft.battery_voltage.replace(",", ".")) : null;
@@ -177,7 +221,17 @@ export default function StepInstalacao() {
         </ScrollView>
       </KeyboardAvoidingView>
       <View style={styles.footer}>
-        <Btn testID="step-next" title="Continuar" icon="arrow-forward" onPress={next} />
+        {draft.service_type_code ? (
+          <Btn
+            testID="btn-send-initial"
+            title="🚀 Enviar Checklist Inicial (inicia SLA)"
+            icon="rocket-outline"
+            variant="primary"
+            onPress={sendInitialAndExecute}
+          />
+        ) : (
+          <Btn testID="step-next" title="Continuar" icon="arrow-forward" onPress={next} />
+        )}
       </View>
 
       <BarcodeScanner
