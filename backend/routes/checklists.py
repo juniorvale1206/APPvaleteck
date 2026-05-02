@@ -5,6 +5,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
+from pydantic import BaseModel
 
 from constants import COMPANIES
 from core.database import db
@@ -290,6 +291,167 @@ async def create_checklist(payload: ChecklistInput, user=Depends(get_current_use
             {"$set": {"checklist_id": cid, "status": "concluido" if status == "enviado" else "em_andamento"}},
         )
     return _to_out(doc)
+
+
+# =========================================================================
+# v14.1 — Anti-fraude SLA: endpoints server-side para iniciar/finalizar SLA
+# =========================================================================
+INSTALL_CATEGORIES = {"instalacao", "telemetria"}
+EQUIPMENT_PHOTO_WINDOW_SEC = 180  # 3 minutos
+
+
+def _sla_requires_equipment_photo(service_type_code: str) -> bool:
+    st = SERVICE_TYPES.get(service_type_code or "")
+    return bool(st and st.category in INSTALL_CATEGORIES)
+
+
+class SendInitialPayload(BaseModel):
+    service_type_code: str
+    # Dados mínimos iniciais (podem já estar salvos no rascunho)
+    nome: Optional[str] = None
+    sobrenome: Optional[str] = None
+    placa: Optional[str] = None
+    cpf: Optional[str] = None
+    empresa: Optional[str] = None
+    tipo_atendimento: Optional[str] = None
+
+
+class EquipmentPhotoPayload(BaseModel):
+    photo_base64: str
+
+
+@router.post("/{cid}/send-initial", response_model=ChecklistOut)
+async def send_initial_checklist(cid: str, payload: SendInitialPayload, user=Depends(get_current_user)):
+    """Inicia oficialmente o SLA server-side. Cliente+Instalação já devem estar preenchidos.
+
+    - Valida que `service_type_code` é um código válido do catálogo.
+    - Registra `checklist_sent_at` (UTC) do servidor — o relógio do celular não conta.
+    - Define `phase`:
+        - `awaiting_equipment_photo` se for instalação/telemetria
+        - `in_execution` se for manutenção/desinstalação/auditoria
+    """
+    st = SERVICE_TYPES.get(payload.service_type_code)
+    if not st:
+        raise HTTPException(status_code=400, detail="service_type_code inválido")
+    if st.level_restriction and user.get("level") != st.level_restriction:
+        # Admin pode overrid, não o técnico
+        raise HTTPException(status_code=403, detail=f"Serviço restrito a nível {st.level_restriction.upper()}")
+
+    doc = await db.checklists.find_one({"id": cid, "user_id": user["id"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Checklist não encontrado")
+    if doc.get("phase") not in (None, "", "draft"):
+        raise HTTPException(status_code=409, detail=f"Checklist já iniciado (phase={doc.get('phase')})")
+
+    now = datetime.now(timezone.utc).isoformat()
+    update: dict = {
+        "service_type_code": st.code.value,
+        "service_type_name": st.name,
+        "sla_max_minutes": st.max_minutes,
+        "sla_base_value": st.base_value,
+        "checklist_sent_at": now,
+        "phase": "awaiting_equipment_photo" if _sla_requires_equipment_photo(st.code.value) else "in_execution",
+        "updated_at": now,
+    }
+    # Opcional: salvar dados iniciais enviados
+    for key in ("nome", "sobrenome", "placa", "cpf", "empresa", "tipo_atendimento"):
+        val = getattr(payload, key, None)
+        if val:
+            if key == "placa":
+                update["placa"] = normalize_plate(val)
+                update["plate_norm"] = normalize_plate(val)
+            else:
+                update[key] = val
+
+    await db.checklists.update_one({"id": cid}, {"$set": update})
+    updated = await db.checklists.find_one({"id": cid}, {"_id": 0})
+    return _to_out(updated)
+
+
+@router.post("/{cid}/equipment-photo", response_model=ChecklistOut)
+async def upload_equipment_photo(cid: str, payload: EquipmentPhotoPayload, user=Depends(get_current_user)):
+    """Registra a foto unificada do equipamento (rastreador+IMEI+placa/chassi).
+
+    - Calcula delay em segundos desde `checklist_sent_at`.
+    - Se delay > 180s, marca `equipment_photo_flag=true` (alerta para admin).
+    - Nunca bloqueia o fluxo (conforme regra D = apenas alerta).
+    """
+    doc = await db.checklists.find_one({"id": cid, "user_id": user["id"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Checklist não encontrado")
+    sent_at = doc.get("checklist_sent_at")
+    if not sent_at:
+        raise HTTPException(status_code=409, detail="Checklist inicial não foi enviado ainda")
+
+    try:
+        sent_dt = datetime.fromisoformat(sent_at.replace("Z", "+00:00"))
+    except Exception:
+        raise HTTPException(status_code=500, detail="checklist_sent_at inválido")
+    now = datetime.now(timezone.utc)
+    delay_sec = int((now - sent_dt).total_seconds())
+    flag = delay_sec > EQUIPMENT_PHOTO_WINDOW_SEC
+
+    # Salva foto (base64 direto por enquanto; Cloudinary futuro)
+    photo_url = ""
+    if CLOUDINARY_ENABLED:
+        photo_url = upload_base64_image(payload.photo_base64, folder=CLOUDINARY_FOLDER, public_id=f"{cid}_equipment")
+    else:
+        photo_url = payload.photo_base64  # base64 direto
+
+    update = {
+        "equipment_photo_url": photo_url,
+        "equipment_photo_at": now.isoformat(),
+        "equipment_photo_delay_sec": delay_sec,
+        "equipment_photo_flag": flag,
+        "phase": "in_execution",
+        "updated_at": now.isoformat(),
+    }
+    await db.checklists.update_one({"id": cid}, {"$set": update})
+    updated = await db.checklists.find_one({"id": cid}, {"_id": 0})
+    return _to_out(updated)
+
+
+@router.post("/{cid}/finalize", response_model=ChecklistOut)
+async def finalize_service(cid: str, user=Depends(get_current_user)):
+    """Encerra o SLA server-side. Chamado quando o técnico toca em 'Finalizar OS'.
+
+    Calcula o tempo total (sla_total_sec) e marca phase=finalized.
+    O envio final completo do checklist (fotos + assinatura) continua via PUT /checklists/{id}.
+    """
+    doc = await db.checklists.find_one({"id": cid, "user_id": user["id"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Checklist não encontrado")
+    sent_at = doc.get("checklist_sent_at")
+    if not sent_at:
+        raise HTTPException(status_code=409, detail="Cronômetro nunca foi iniciado")
+    if doc.get("service_finished_at"):
+        raise HTTPException(status_code=409, detail="Serviço já foi finalizado")
+
+    try:
+        sent_dt = datetime.fromisoformat(sent_at.replace("Z", "+00:00"))
+    except Exception:
+        raise HTTPException(status_code=500, detail="checklist_sent_at inválido")
+    now = datetime.now(timezone.utc)
+    total_sec = int((now - sent_dt).total_seconds())
+    within = None
+    sla_max = doc.get("sla_max_minutes") or 0
+    if sla_max > 0:
+        within = (total_sec / 60.0) <= sla_max
+
+    await db.checklists.update_one({"id": cid}, {"$set": {
+        "service_finished_at": now.isoformat(),
+        "sla_total_sec": total_sec,
+        "execution_elapsed_sec": total_sec,          # compat com telas antigas
+        "execution_ended_at": now.isoformat(),       # compat
+        "execution_started_at": sent_at,             # compat
+        "sla_within": within,
+        "phase": "finalized",
+        "updated_at": now.isoformat(),
+    }})
+    updated = await db.checklists.find_one({"id": cid}, {"_id": 0})
+    return _to_out(updated)
+
+
 
 
 @router.get("/{cid}", response_model=ChecklistOut)

@@ -77,29 +77,34 @@ async def my_monthly_statement(
         elif v_status == "duplicidade_garantia":
             duplicates += 1
 
-        # SLA (só quando houver serviço e elapsed)
-        within = None
-        base_v = 0.0
-        if st_def and elapsed_min > 0:
-            within = elapsed_min <= st_def.max_minutes
-            if within:
+        # Prefere `comp_final_value` quando já foi calculado pelo motor
+        if "comp_final_value" in d:
+            base_v = float(d.get("comp_final_value") or 0.0)
+            if d.get("comp_sla_cut"):
+                out_sla += 1
+            else:
+                within_sla += 1
+            if d.get("comp_warranty_zero"):
+                duplicates += 0   # já contamos acima via validation_status
+        else:
+            # Fallback (OS sem passagem pelo motor ainda) — estimativa
+            within = None
+            base_v = 0.0
+            if st_def and elapsed_min > 0:
+                within = elapsed_min <= st_def.max_minutes
+                if within:
+                    within_sla += 1
+                    base_v = st_def.base_value
+                else:
+                    out_sla += 1
+                    base_v = st_def.base_value / 2
+            elif st_def:
                 within_sla += 1
                 base_v = st_def.base_value
-            else:
-                out_sla += 1
-                base_v = st_def.base_value / 2       # corte de 50%
-        elif st_def:
-            # Sem tempo registrado — assume dentro do SLA para fins de estimativa
-            within_sla += 1
-            base_v = st_def.base_value
-
-        # Júnior recebe valor fixo por OS dentro do SLA (sem usar tabela R$2-10)
-        if level == "junior":
-            base_v = JUNIOR_FIXED_VALUE_PER_OS if (within is None or within) else 0.0
-
-        # Duplicidade: OS com validation_status=duplicidade_garantia vale R$ 0
-        if v_status == "duplicidade_garantia":
-            base_v = 0.0
+            if level == "junior":
+                base_v = JUNIOR_FIXED_VALUE_PER_OS if (within is None or within) else 0.0
+            if v_status == "duplicidade_garantia":
+                base_v = 0.0
 
         gross_estimated += base_v
 
@@ -123,8 +128,19 @@ async def my_monthly_statement(
     ).to_list(length=500)
     enriched = [enrich_reverse_fields(i, now=end) for i in raw_items]
     overdue = compute_penalty_total(enriched)
-    penalty_total = round(overdue["penalty_total"], 2)
-    penalty_count = overdue["overdue_count"]
+    penalty_total_inventory = round(overdue["penalty_total"], 2)
+    penalty_count_inventory = overdue["overdue_count"]
+
+    # Débitos de retorno 30d (v14 Fase 3B)
+    pen_docs = await db.penalty_transactions.find(
+        {"user_id": user["id"], "created_at": {"$gte": start.isoformat(), "$lte": end.isoformat()}},
+        {"_id": 0},
+    ).to_list(length=500)
+    return_penalties_total = round(sum(abs(float(p["amount"])) for p in pen_docs), 2)
+    return_penalties_count = len(pen_docs)
+
+    penalty_total = round(penalty_total_inventory + return_penalties_total, 2)
+    penalty_count = penalty_count_inventory + return_penalties_count
 
     # Meta mensal por nível
     meta_target = JUNIOR_GOAL_BONUS_THRESHOLD if level == "junior" else N1N2_MONTHLY_GOAL_THRESHOLD

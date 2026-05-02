@@ -63,6 +63,15 @@ class ChecklistInput(BaseModel):
     execution_elapsed_sec: Optional[int] = 0
     # Motor de Comissionamento — tipo de serviço oficial (obrigatório a partir da v14)
     service_type_code: Optional[str] = ""     # código da tabela SERVICE_TYPES
+    # v14.1 — Anti-fraude SLA (server-side timestamps)
+    phase: Optional[str] = "draft"            # draft | awaiting_equipment_photo | in_execution | finalized
+    checklist_sent_at: Optional[str] = ""     # server-side: momento do "Enviar Checklist Inicial"
+    equipment_photo_at: Optional[str] = ""    # server-side: momento do upload da foto
+    equipment_photo_delay_sec: Optional[int] = 0  # delay entre checklist_sent_at e equipment_photo_at
+    equipment_photo_flag: Optional[bool] = False   # true se passou de 180s
+    equipment_photo_url: Optional[str] = ""   # URL/base64 da foto unificada (rastreador+IMEI+placa)
+    service_finished_at: Optional[str] = ""   # server-side: momento do "Finalizar OS"
+    sla_total_sec: Optional[int] = 0          # diff entre checklist_sent_at e service_finished_at
     # Evidências
     photos: List[PhotoIn] = []
     location: Optional[dict] = None
@@ -120,6 +129,15 @@ class ChecklistOut(BaseModel):
     sla_max_minutes: Optional[int] = 0
     sla_base_value: Optional[float] = 0.0
     sla_within: Optional[bool] = None
+    # v14.1 — Anti-fraude SLA (server-side)
+    phase: Optional[str] = "draft"
+    checklist_sent_at: Optional[str] = ""
+    equipment_photo_at: Optional[str] = ""
+    equipment_photo_delay_sec: Optional[int] = 0
+    equipment_photo_flag: Optional[bool] = False
+    equipment_photo_url: Optional[str] = ""
+    service_finished_at: Optional[str] = ""
+    sla_total_sec: Optional[int] = 0
     photos: List[PhotoIn] = []
     location: Optional[dict] = None
     location_available: bool = False

@@ -178,17 +178,31 @@ async def approve_checklist(checklist_id: str, admin=Depends(require_admin)):
     if cl["status"] not in ("enviado", "em_auditoria"):
         raise HTTPException(status_code=400, detail=f"Checklist já processado (status atual: {cl['status']})")
     updated = await apply_approval_rules(checklist_id, admin)
+    # v14 Fase 3B — Motor Financeiro Pós-Aprovação
+    from services.compensation import compute_and_persist_compensation
+    comp = await compute_and_persist_compensation(checklist_id, admin)
+    # Recarrega para retornar o snapshot completo
+    updated = await db.checklists.find_one({"id": checklist_id}, {"_id": 0})
+
+    msg_parts = []
+    if updated.get("validation_status") == "duplicidade_garantia":
+        msg_parts.append("⚠️ Duplicidade detectada (regra antiga 30d).")
+    if comp.get("comp_warranty_zero"):
+        msg_parts.append(f"🔒 Garantia ({comp.get('comp_max_minutes', 0)} dias) — OS = R$ 0,00.")
+    if comp.get("comp_return_flagged") and comp.get("comp_penalty_on_original"):
+        msg_parts.append(f"💸 Retorno 30d — R$ {comp['comp_penalty_on_original']:.2f} debitado do técnico original.")
+    if comp.get("comp_sla_cut"):
+        msg_parts.append("⏱️ SLA extrapolado — valor cortado em 50%.")
+    msg_parts.append(f"💰 Valor final creditado: R$ {comp.get('comp_final_value', 0):.2f}.")
+
     return {
         "ok": True,
         "checklist": updated,
         "validation_status": updated.get("validation_status"),
         "validation_bonus": updated.get("validation_bonus"),
         "duplicate_of": updated.get("duplicate_of"),
-        "message": (
-            "Duplicidade detectada — checklist marcado como garantia (R$ 0,00)."
-            if updated.get("validation_status") == "duplicidade_garantia"
-            else f"Checklist validado. Bônus de R$ {updated.get('validation_bonus', 0):.2f} creditado."
-        ),
+        "compensation": comp,
+        "message": " ".join(msg_parts),
     }
 
 
