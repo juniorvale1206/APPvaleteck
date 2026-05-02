@@ -172,6 +172,33 @@ export type Checklist = {
   execution_started_at?: string;
   execution_ended_at?: string;
   execution_elapsed_sec?: number;
+  // v14 — Motor de Comissionamento
+  service_type_code?: string;
+  service_type_name?: string;
+  sla_max_minutes?: number;
+  sla_base_value?: number;
+  sla_within?: boolean | null;
+  // v14.1 — Anti-fraude SLA server-side
+  phase?: "draft" | "awaiting_equipment_photo" | "in_execution" | "finalized";
+  checklist_sent_at?: string;
+  equipment_photo_at?: string;
+  equipment_photo_delay_sec?: number;
+  equipment_photo_flag?: boolean;
+  equipment_photo_url?: string;
+  service_finished_at?: string;
+  sla_total_sec?: number;
+  // v14 Fase 3B — Motor Financeiro (persistido na aprovação)
+  comp_base_value?: number;
+  comp_sla_cut?: boolean;
+  comp_warranty_zero?: boolean;
+  comp_return_flagged?: boolean;
+  comp_final_value?: number;
+  comp_penalty_on_original?: number;
+  comp_previous_os_id?: string | null;
+  comp_level_applied?: string;
+  comp_elapsed_min?: number;
+  comp_max_minutes?: number;
+  comp_computed_at?: string;
   photos: Photo[];
   location?: { lat: number; lng: number } | null;
   location_available: boolean;

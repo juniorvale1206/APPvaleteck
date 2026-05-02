@@ -52,9 +52,13 @@ export default function AdminApprovalDetail() {
 
   const approve = () => {
     if (!item) return;
+    const svcName = item.service_type_name || "Sem tipo";
+    const slaMax = item.sla_max_minutes || 0;
+    const elapsed = Math.round((item.sla_total_sec || item.execution_elapsed_sec || 0) / 60);
+    const slaTxt = slaMax ? `${elapsed}min / ${slaMax}min SLA` : "SLA não definido";
     Alert.alert(
       "Aprovar e Processar",
-      `Confirmar aprovação de ${item.numero}?\n\nO sistema vai executar:\n• Regra de Duplicidade (30 dias)\n• Atualizar meta do técnico\n\nSe válido: +R$ 5,00. Se duplicidade: R$ 0,00.`,
+      `${item.numero} — ${svcName}\n⏱️ ${slaTxt}\n\nO motor financeiro vai executar:\n• Duplicidade 30d (regra antiga)\n• Garantia ≤90d (mesma placa+tipo → R$ 0)\n• Retorno ≤30d (débito R$ 30 no técnico original)\n• Corte SLA 50% se extrapolar\n• Valor final creditado`,
       [
         { text: "Cancelar", style: "cancel" },
         {
@@ -62,9 +66,21 @@ export default function AdminApprovalDetail() {
             setActing(true);
             try {
               const { data } = await api.post<any>(`/admin/checklists/${item.id}/approve`);
+              const c = data.compensation || {};
+              const lines = [
+                `💰 Valor final: R$ ${(c.comp_final_value || 0).toFixed(2)}`,
+                `📊 Base (antes de regras): R$ ${(c.comp_base_value || 0).toFixed(2)}`,
+              ];
+              if (c.comp_sla_cut) lines.push("⏱️ SLA extrapolado — corte de 50% aplicado");
+              if (c.comp_warranty_zero) lines.push("🔒 Garantia 90d (mesma placa+tipo) — OS = R$ 0,00");
+              if (c.comp_return_flagged) lines.push(`💸 Retorno 30d — R$ ${(c.comp_penalty_on_original || 0).toFixed(2)} debitado do técnico original`);
+              if (data.validation_status === "duplicidade_garantia") lines.push("⚠️ Duplicidade detectada (regra 30d antiga)");
+              lines.push(`Nível aplicado: ${(c.comp_level_applied || "").toUpperCase()}`);
               Alert.alert(
-                data.validation_status === "valido" ? "✅ Aprovado — Válido" : "⚠️ Aprovado — Duplicidade",
-                data.message,
+                c.comp_warranty_zero ? "⚠️ Aprovado — Garantia"
+                  : c.comp_sla_cut ? "⏱️ Aprovado — SLA Cortado"
+                  : "✅ Aprovado",
+                lines.join("\n"),
                 [{ text: "OK", onPress: () => router.back() }],
               );
             } catch (e) { Alert.alert("Erro", apiErrorMessage(e)); }
@@ -143,6 +159,48 @@ export default function AdminApprovalDetail() {
               <Text style={styles.heroTech}>Técnico: {techName || item.user_id}</Text>
               {!!item.sent_at && <Text style={styles.heroMeta}>Enviado em {new Date(item.sent_at).toLocaleString("pt-BR")}</Text>}
             </View>
+
+            {/* v14 — Preview do Motor de Comissionamento */}
+            {(item.service_type_code || item.sla_total_sec) && (() => {
+              const slaMax = item.sla_max_minutes || 0;
+              const elapsedMin = Math.round((item.sla_total_sec || item.execution_elapsed_sec || 0) / 60);
+              const baseValue = item.sla_base_value || 0;
+              const slaOver = slaMax > 0 && elapsedMin > slaMax;
+              const estFinal = slaOver ? baseValue / 2 : baseValue;
+              const photoDelay = item.equipment_photo_delay_sec || 0;
+              const photoFlag = !!item.equipment_photo_flag;
+              return (
+                <View style={[styles.card, { borderColor: slaOver ? colors.danger : colors.success, borderWidth: 1.5 }]} testID="motor-preview">
+                  <Text style={styles.cardTitle}>⚙️ Motor de Comissionamento (preview)</Text>
+                  <Row label="Serviço" value={item.service_type_name || item.service_type_code} />
+                  <Row
+                    label="Tempo de execução"
+                    value={`${elapsedMin} min${slaMax > 0 ? ` / ${slaMax} min SLA` : ""}`}
+                  />
+                  <Row
+                    label="Status SLA"
+                    value={slaOver ? "⏱️ EXTRAPOLADO — corte 50%" : "✅ Dentro do SLA"}
+                  />
+                  <Row label="Valor base" value={`R$ ${baseValue.toFixed(2)}`} />
+                  <Row label="Valor estimado" value={`R$ ${estFinal.toFixed(2)}`} />
+                  {item.comp_final_value !== undefined && (
+                    <Row label="Valor FINAL (já processado)" value={`R$ ${item.comp_final_value.toFixed(2)}`} />
+                  )}
+                  {photoDelay > 0 && (
+                    <Row
+                      label="Foto equipamento enviada em"
+                      value={`${photoDelay}s ${photoFlag ? "⚠️ > 3min (FRAUDE DE SLA)" : "✓"}`}
+                    />
+                  )}
+                  {item.comp_warranty_zero && (
+                    <Row label="⚠️ Garantia 90d" value="OS ficará R$ 0,00" />
+                  )}
+                  {item.comp_return_flagged && (
+                    <Row label="💸 Retorno 30d" value={`-R$ ${(item.comp_penalty_on_original || 0).toFixed(2)} do técnico original`} />
+                  )}
+                </View>
+              );
+            })()}
 
             {/* Cliente */}
             <View style={styles.card}>

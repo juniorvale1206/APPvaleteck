@@ -65,7 +65,7 @@ async def my_earnings(period: str = "month", user=Depends(get_current_user)):
         by_type[tipo] = round(by_type.get(tipo, 0.0) + net, 2)
         jobs.append(EarningJob(
             id=d["id"],
-            numero=d["numero"],
+            numero=d.get("numero", ""),
             empresa=empresa,
             tipo_atendimento=tipo,
             nome=d.get("nome", ""),
