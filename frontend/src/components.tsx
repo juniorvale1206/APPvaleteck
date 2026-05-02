@@ -41,6 +41,8 @@ export function Btn({
   return (
     <TouchableOpacity
       testID={testID}
+      accessibilityRole="button"
+      accessibilityLabel={title}
       activeOpacity={0.85}
       onPress={onPress}
       disabled={isDisabled}
