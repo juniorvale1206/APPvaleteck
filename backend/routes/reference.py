@@ -5,6 +5,7 @@ from constants import (
     COMPANIES, EQUIPMENTS, ACCESSORIES_CARRO, ACCESSORIES_MOTO,
     SERVICE_TYPES, BATTERY_STATES, PROBLEMS_CLIENT, PROBLEMS_TECHNICIAN,
 )
+from models.service_types import SERVICE_TYPES as SVC_CATALOG, list_service_types_for_level
 
 router = APIRouter(prefix="/reference", tags=["reference"])
 
@@ -41,3 +42,31 @@ async def list_battery_states():
 @router.get("/problems")
 async def list_problems():
     return {"client": PROBLEMS_CLIENT, "technician": PROBLEMS_TECHNICIAN}
+
+# Motor de Comissionamento — catálogo oficial com SLA e valores
+@router.get("/service-catalog")
+async def list_service_catalog(level: Optional[str] = None):
+    """Retorna o catálogo de tipos de serviço do Motor de Comissionamento.
+
+    Se `level` for informado (junior|n1|n2|n3), filtra os tipos acessíveis
+    para aquele nível (ex.: apenas N2 vê acessórios).
+    """
+    items = (
+        list_service_types_for_level(level)
+        if level in {"junior", "n1", "n2", "n3"}
+        else list(SVC_CATALOG.values())
+    )
+    return {
+        "items": [
+            {
+                "code": it.code.value,
+                "name": it.name,
+                "category": it.category,
+                "max_minutes": it.max_minutes,
+                "base_value": it.base_value,
+                "level_restriction": it.level_restriction,
+            }
+            for it in items
+        ],
+    }
+

@@ -61,6 +61,8 @@ class ChecklistInput(BaseModel):
     execution_started_at: Optional[str] = ""
     execution_ended_at: Optional[str] = ""
     execution_elapsed_sec: Optional[int] = 0
+    # Motor de Comissionamento — tipo de serviço oficial (obrigatório a partir da v14)
+    service_type_code: Optional[str] = ""     # código da tabela SERVICE_TYPES
     # Evidências
     photos: List[PhotoIn] = []
     location: Optional[dict] = None
@@ -112,6 +114,12 @@ class ChecklistOut(BaseModel):
     execution_started_at: Optional[str] = ""
     execution_ended_at: Optional[str] = ""
     execution_elapsed_sec: Optional[int] = 0
+    # Motor de Comissionamento
+    service_type_code: Optional[str] = ""
+    service_type_name: Optional[str] = ""
+    sla_max_minutes: Optional[int] = 0
+    sla_base_value: Optional[float] = 0.0
+    sla_within: Optional[bool] = None
     photos: List[PhotoIn] = []
     location: Optional[dict] = None
     location_available: bool = False

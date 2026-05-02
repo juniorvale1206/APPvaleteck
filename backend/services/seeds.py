@@ -14,28 +14,75 @@ logger = logging.getLogger("valeteck.seeds")
 
 
 async def seed_users():
-    seeds = [
-        {"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD, "name": "Administrador", "role": "admin"},
-        {"email": TECH_EMAIL,  "password": TECH_PASSWORD,  "name": "Técnico Demo",  "role": "tecnico"},
+    """Cria/atualiza usuários demo com níveis (junior/n1/n2/n3) e vínculo de tutoria.
+
+    - admin: role=admin, sem level
+    - tecnico@valeteck.com: role=tecnico, level=n1 (compat com dados existentes)
+    - junior@valeteck.com: role=tecnico, level=junior, tutor_id=n3
+    - n2@valeteck.com: role=tecnico, level=n2
+    - n3@valeteck.com: role=tecnico, level=n3 (instrutor — supervisiona o junior)
+    """
+    # Primeiro garante admin + tecnico principal (compat)
+    base_seeds = [
+        {"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD, "name": "Administrador",
+         "role": "admin", "level": None},
+        {"email": TECH_EMAIL,  "password": TECH_PASSWORD,  "name": "Técnico Demo",
+         "role": "tecnico", "level": "n1"},
+        {"email": "n2@valeteck.com", "password": "n2tech123", "name": "Carlos N2 (Especialista)",
+         "role": "tecnico", "level": "n2"},
+        {"email": "n3@valeteck.com", "password": "n3tech123", "name": "Marina N3 (Instrutora)",
+         "role": "tecnico", "level": "n3"},
+        {"email": "junior@valeteck.com", "password": "junior123", "name": "Pedro Júnior",
+         "role": "tecnico", "level": "junior"},
     ]
-    for s in seeds:
+    created_ids: dict[str, str] = {}
+    for s in base_seeds:
         existing = await db.users.find_one({"email": s["email"]})
         if existing is None:
+            new_id = str(uuid.uuid4())
             await db.users.insert_one({
-                "id": str(uuid.uuid4()),
+                "id": new_id,
                 "email": s["email"],
                 "password_hash": hash_password(s["password"]),
                 "name": s["name"],
                 "role": s["role"],
+                "level": s["level"],
+                "tutor_id": None,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             })
-            logger.info("Seeded user %s", s["email"])
-        elif not verify_password(s["password"], existing["password_hash"]):
-            await db.users.update_one(
-                {"email": s["email"]},
-                {"$set": {"password_hash": hash_password(s["password"])}},
-            )
-            logger.info("Updated password for %s", s["email"])
+            created_ids[s["email"]] = new_id
+            logger.info("Seeded user %s (level=%s)", s["email"], s["level"])
+        else:
+            created_ids[s["email"]] = existing["id"]
+            # Backfill: garante que usuários antigos tenham `level` e `tutor_id`
+            patch: dict = {}
+            if "level" not in existing:
+                if existing.get("role") == "tecnico":
+                    patch["level"] = s["level"] or "n1"
+                else:
+                    patch["level"] = None
+            if "tutor_id" not in existing:
+                patch["tutor_id"] = None
+            if not verify_password(s["password"], existing["password_hash"]):
+                patch["password_hash"] = hash_password(s["password"])
+            if patch:
+                await db.users.update_one({"email": s["email"]}, {"$set": patch})
+                logger.info("Patched user %s with %s", s["email"], list(patch.keys()))
+
+    # Vincula Pedro Júnior à Marina N3 como tutora
+    junior_id = created_ids.get("junior@valeteck.com")
+    n3_id = created_ids.get("n3@valeteck.com")
+    if junior_id and n3_id:
+        await db.users.update_one(
+            {"id": junior_id},
+            {"$set": {"tutor_id": n3_id}},
+        )
+
+    # Backfill global: todo técnico sem level vira n1
+    await db.users.update_many(
+        {"role": "tecnico", "$or": [{"level": {"$exists": False}}, {"level": None}]},
+        {"$set": {"level": "n1", "tutor_id": None}},
+    )
 
 
 async def seed_appointments(user_id: str):

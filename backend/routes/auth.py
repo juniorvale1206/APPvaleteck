@@ -30,7 +30,10 @@ async def login(request: Request, payload: LoginInput):
         access_token=access,
         refresh_token=refresh,
         expires_in=JWT_ACCESS_MINUTES * 60,
-        user=UserOut(id=user["id"], email=user["email"], name=user["name"], role=user["role"]),
+        user=UserOut(
+            id=user["id"], email=user["email"], name=user["name"], role=user["role"],
+            level=user.get("level"), tutor_id=user.get("tutor_id"),
+        ),
     )
 
 
@@ -53,7 +56,10 @@ async def refresh(request: Request, payload: RefreshIn):
 
 @router.get("/me", response_model=UserOut)
 async def me(user=Depends(get_current_user)):
-    return UserOut(id=user["id"], email=user["email"], name=user["name"], role=user["role"])
+    return UserOut(
+        id=user["id"], email=user["email"], name=user["name"], role=user["role"],
+        level=user.get("level"), tutor_id=user.get("tutor_id"),
+    )
 
 
 @router.post("/logout")

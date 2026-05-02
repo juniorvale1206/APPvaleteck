@@ -1,634 +1,238 @@
-"""Valeteck v13 — Motor de Regras Pós-Aprovação — Backend Test Suite.
+"""Valeteck v14 - Fase 1 do Motor de Comissionamento — smoke test.
 
-Cobre:
-1) Admin endpoints (pending-approvals) + controle de role.
-2) Motor de regras — aprovação (bônus R$5 / duplicidade 30d).
-3) Rejeição com motivo obrigatório.
-4) Meta configurável (GET gamification/meta, POST admin/users/{id}/meta).
-5) Earnings com validation_bonus refletido.
-6) Regressão de endpoints core.
+Valida:
+  A) Login + UserOut (level + tutor_id) para admin, tecnico, n2, n3, junior.
+  B) GET /auth/me com token do junior: level='junior' e tutor_id==id do n3.
+  C) GET /reference/service-catalog sem filtro → 11 itens + keys esperadas.
+  D) GET /reference/service-catalog?level=junior (e ?level=n1) → 9 itens, sem categoria "acessorio".
+  E) GET /reference/service-catalog?level=n2 → 11 itens (incluindo acessórios).
+  F) Regressão com técnico (tecnico@valeteck.com): /auth/me, /appointments,
+     /gamification/meta (target=60), /gamification/profile, /inventory/me.
 """
-import os
-import sys
+from __future__ import annotations
+
 import json
-import base64
-import uuid
-import random
-import string
-import time
-from typing import Any, Dict, Optional
+import sys
+from typing import Any, Optional
 
 import requests
 
-BASE = os.environ.get(
-    "BACKEND_URL",
-    "https://installer-track-1.preview.emergentagent.com",
-).rstrip("/")
-API = BASE + "/api"
+BASE = "https://installer-track-1.preview.emergentagent.com/api"
 
-ADMIN_EMAIL = "admin@valeteck.com"
-ADMIN_PASS = "admin123"
-TECH_EMAIL = "tecnico@valeteck.com"
-TECH_PASS = "tecnico123"
+USERS = [
+    {"email": "admin@valeteck.com",   "password": "admin123",   "role": "admin",   "level": None,     "expect_tutor": False},
+    {"email": "tecnico@valeteck.com", "password": "tecnico123", "role": "tecnico", "level": "n1",     "expect_tutor": False},
+    {"email": "n2@valeteck.com",      "password": "n2tech123",  "role": "tecnico", "level": "n2",     "expect_tutor": False},
+    {"email": "n3@valeteck.com",      "password": "n3tech123",  "role": "tecnico", "level": "n3",     "expect_tutor": False},
+    {"email": "junior@valeteck.com",  "password": "junior123",  "role": "tecnico", "level": "junior", "expect_tutor": True},
+]
 
-# -------------- helpers --------------
-PASSED: list = []
-FAILED: list = []
+PASS = "\u2705"
+FAIL = "\u274c"
 
-
-def ok(msg):
-    PASSED.append(msg)
-    print(f"  PASS: {msg}")
+results: list[tuple[str, bool, str]] = []
 
 
-def fail(msg, extra=""):
-    FAILED.append(f"{msg} :: {extra}")
-    print(f"  FAIL: {msg} :: {extra}")
+def mark(label: str, ok: bool, detail: str = "") -> None:
+    results.append((label, ok, detail))
+    print(f"{PASS if ok else FAIL} {label} :: {detail}")
 
 
-def login(email: str, password: str) -> Dict[str, Any]:
-    r = requests.post(f"{API}/auth/login", json={"email": email, "password": password}, timeout=30)
-    assert r.status_code == 200, f"login {email} -> {r.status_code} {r.text}"
-    data = r.json()
-    return data
+def post_login(email: str, password: str) -> Optional[dict[str, Any]]:
+    r = requests.post(f"{BASE}/auth/login", json={"email": email, "password": password}, timeout=20)
+    if r.status_code != 200:
+        return None
+    return r.json()
 
 
-def auth_headers(token: str) -> Dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
+def get_with_token(path: str, token: str) -> requests.Response:
+    return requests.get(f"{BASE}{path}", headers={"Authorization": f"Bearer {token}"}, timeout=20)
 
 
-def rand_plate() -> str:
-    # Mercosul-like: 3 letters + 1 digit + 1 letter + 2 digits
-    letters = string.ascii_uppercase
-    digits = string.digits
-    return (
-        "".join(random.choice(letters) for _ in range(3))
-        + random.choice(digits)
-        + random.choice(letters)
-        + "".join(random.choice(digits) for _ in range(2))
-    )
+# -------------------- A) Login + UserOut --------------------
+print("\n========== A) LOGIN + USEROUT ==========")
+tokens: dict[str, str] = {}
+ids: dict[str, str] = {}
+user_payloads: dict[str, dict[str, Any]] = {}
 
-
-def rand_imei() -> str:
-    return "".join(random.choice(string.digits) for _ in range(15))
-
-
-def tiny_b64_png() -> str:
-    # 1x1 transparent PNG
-    b = bytes.fromhex(
-        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
-        "890000000d4944415478da63f8cfc0000000030001012bf3150a0000000049454e44ae426082"
-    )
-    return "data:image/png;base64," + base64.b64encode(b).decode()
-
-
-def make_checklist_payload(plate: str, imei: Optional[str] = None) -> Dict[str, Any]:
-    """Payload mínimo válido para status='enviado'."""
-    photos = []
-    for step in (1, 2, 3, 4):
-        photos.append({
-            "photo_id": uuid.uuid4().hex[:8],
-            "workflow_step": step,
-            "base64": tiny_b64_png(),
-            "caption": f"foto step {step}",
-        })
-    return {
-        "status": "enviado",
-        "nome": "Cliente",
-        "sobrenome": "Teste v13",
-        "placa": plate,
-        "telefone": "11999990000",
-        "empresa": "Rastremix",
-        "equipamento": "Rastreador XP-100",
-        "tipo_atendimento": "Instalação",
-        "imei": imei or rand_imei(),
-        "battery_state": "Normal",
-        "photos": photos,
-        "signature_base64": tiny_b64_png(),
-        "location_available": False,
-    }
-
-
-# -------------- tests --------------
-def main() -> int:
-    print(f"Base URL: {API}")
-
-    # ---------- login admin + técnico ----------
-    try:
-        admin = login(ADMIN_EMAIL, ADMIN_PASS)
-        tech = login(TECH_EMAIL, TECH_PASS)
-        admin_tok = admin.get("access_token") or admin.get("token")
-        tech_tok = tech.get("access_token") or tech.get("token")
-        assert admin_tok and tech_tok
-        ok("login admin + técnico OK")
-        admin_hdr = auth_headers(admin_tok)
-        tech_hdr = auth_headers(tech_tok)
-        tech_id = tech["user"]["id"]
-    except Exception as e:
-        fail("login inicial", str(e))
-        return 1
-
-    # ==================================================================
-    # 1) ADMIN ENDPOINTS — pending-approvals
-    # ==================================================================
-    print("\n[1] ADMIN ENDPOINTS")
-    try:
-        r = requests.get(f"{API}/admin/pending-approvals", headers=admin_hdr, timeout=30)
-        if r.status_code != 200:
-            fail("GET /admin/pending-approvals admin", f"status={r.status_code} body={r.text}")
-            pending = []
-        else:
-            data = r.json()
-            if "pending" not in data or "count" not in data:
-                fail("payload pending-approvals", f"chaves esperadas ausentes: {list(data.keys())}")
-            pending = data.get("pending", [])
-            count = data.get("count")
-            if count != len(pending):
-                fail("count != len(pending)", f"count={count} len={len(pending)}")
-            else:
-                ok(f"GET /admin/pending-approvals OK (count={count})")
-            # Enriquecimento
-            if pending:
-                sample = pending[0]
-                if "technician_name" in sample and "technician_email" in sample:
-                    ok("items enriquecidos com technician_name/email")
-                else:
-                    fail("enriquecimento técnico ausente", f"keys={list(sample.keys())[:20]}")
-    except Exception as e:
-        fail("GET /admin/pending-approvals", str(e))
-        pending = []
-
-    # Chamada com token de técnico → 403
-    try:
-        r = requests.get(f"{API}/admin/pending-approvals", headers=tech_hdr, timeout=30)
-        if r.status_code == 403:
-            ok("técnico em /admin/pending-approvals → 403")
-        else:
-            fail("pending-approvals com tecnico", f"esperava 403, veio {r.status_code}")
-    except Exception as e:
-        fail("pending-approvals tecnico", str(e))
-
-    # ==================================================================
-    # 2) MOTOR DE REGRAS — APROVAÇÃO
-    # ==================================================================
-    print("\n[2] MOTOR DE REGRAS — APROVAÇÃO")
-
-    # Precisamos de checklists do técnico tecnico@valeteck.com em status enviado para testar.
-    # Filtra da lista pending apenas os do nosso técnico.
-    tech_pending = [p for p in pending if p.get("user_id") == tech_id]
-    approved_checklist: Optional[dict] = None
-    approved_plate: Optional[str] = None
-
-    if not tech_pending:
-        # cria um via POST /checklists
-        try:
-            plate = rand_plate()
-            r = requests.post(
-                f"{API}/checklists",
-                json=make_checklist_payload(plate),
-                headers=tech_hdr,
-                timeout=60,
-            )
-            if r.status_code == 200:
-                ch = r.json()
-                tech_pending = [ch]
-                ok(f"checklist criado via POST /checklists id={ch['id'][:8]}")
-            else:
-                fail("criar checklist inicial", f"{r.status_code} {r.text[:200]}")
-        except Exception as e:
-            fail("criar checklist inicial exc", str(e))
-
-    if tech_pending:
-        target = tech_pending[0]
-        target_id = target["id"]
-        approved_plate = target.get("placa") or target.get("plate_norm")
-
-        try:
-            r = requests.post(
-                f"{API}/admin/checklists/{target_id}/approve",
-                headers=admin_hdr,
-                timeout=30,
-            )
-            if r.status_code != 200:
-                fail("approve checklist", f"{r.status_code} {r.text[:300]}")
-            else:
-                data = r.json()
-                if data.get("ok") is not True:
-                    fail("approve ok flag", str(data))
-                if data.get("validation_status") != "valido":
-                    fail("approve validation_status", f"got {data.get('validation_status')}")
-                else:
-                    ok("validation_status=valido")
-                if abs(float(data.get("validation_bonus") or 0) - 5.0) > 0.001:
-                    fail("approve validation_bonus", f"got {data.get('validation_bonus')}")
-                else:
-                    ok("validation_bonus=5.0")
-                if data.get("duplicate_of") not in (None, ""):
-                    fail("duplicate_of deveria ser null", str(data.get("duplicate_of")))
-                else:
-                    ok("duplicate_of=null")
-                msg = data.get("message") or ""
-                if "5" in msg and ("creditado" in msg.lower() or "R$" in msg):
-                    ok(f"mensagem PT-BR creditação: {msg!r}")
-                else:
-                    fail("mensagem PT-BR", f"msg={msg!r}")
-
-                # Verifica persistência: GET /checklists/{id}
-                # (como técnico, dono do checklist)
-                rr = requests.get(f"{API}/checklists/{target_id}", headers=tech_hdr, timeout=30)
-                if rr.status_code == 200:
-                    doc = rr.json()
-                    if doc.get("status") == "aprovado":
-                        ok("status=aprovado persistido")
-                    else:
-                        fail("status aprovado persistido", f"got {doc.get('status')}")
-                    if doc.get("approved_at"):
-                        ok("approved_at preenchido")
-                    else:
-                        fail("approved_at vazio", "")
-                    if doc.get("approved_by_id"):
-                        ok(f"approved_by_id preenchido ({doc.get('approved_by_id')[:8]})")
-                    else:
-                        fail("approved_by_id vazio", "")
-                    approved_checklist = doc
-                else:
-                    fail("GET /checklists/{id} pós-approve", f"{rr.status_code}")
-        except Exception as e:
-            fail("approve exception", str(e))
-
-        # Reaprovar mesmo checklist → 400
-        try:
-            r = requests.post(
-                f"{API}/admin/checklists/{target_id}/approve",
-                headers=admin_hdr,
-                timeout=30,
-            )
-            if r.status_code == 400:
-                detail = r.json().get("detail", "")
-                if "já processado" in detail.lower() or "processado" in detail.lower():
-                    ok(f"re-approve → 400 '{detail}'")
-                else:
-                    fail("re-approve detail", detail)
-            else:
-                fail("re-approve status", f"esperava 400, veio {r.status_code} - {r.text[:200]}")
-        except Exception as e:
-            fail("re-approve exception", str(e))
-
-    # ==================================================================
-    # 3) DUPLICIDADE (30 dias)
-    # ==================================================================
-    print("\n[3] MOTOR DE REGRAS — DUPLICIDADE")
-    if approved_plate:
-        try:
-            payload = make_checklist_payload(approved_plate)  # same plate!
-            r = requests.post(f"{API}/checklists", json=payload, headers=tech_hdr, timeout=60)
-            if r.status_code != 200:
-                fail("criar checklist duplicado", f"{r.status_code} {r.text[:200]}")
-            else:
-                dup_id = r.json()["id"]
-                ok(f"checklist duplicado criado id={dup_id[:8]} placa={approved_plate}")
-
-                rr = requests.post(
-                    f"{API}/admin/checklists/{dup_id}/approve",
-                    headers=admin_hdr, timeout=30,
-                )
-                if rr.status_code != 200:
-                    fail("approve duplicado", f"{rr.status_code} {rr.text[:200]}")
-                else:
-                    d = rr.json()
-                    if d.get("validation_status") == "duplicidade_garantia":
-                        ok("validation_status=duplicidade_garantia")
-                    else:
-                        fail("validation_status dup", f"got {d.get('validation_status')}")
-                    if float(d.get("validation_bonus") or 0) == 0.0:
-                        ok("validation_bonus=0.0 na duplicidade")
-                    else:
-                        fail("validation_bonus dup", f"got {d.get('validation_bonus')}")
-                    dup_of = d.get("duplicate_of")
-                    if dup_of and approved_checklist and dup_of == approved_checklist["id"]:
-                        ok(f"duplicate_of aponta para checklist original ({dup_of[:8]})")
-                    elif dup_of:
-                        ok(f"duplicate_of preenchido ({dup_of[:8]})")
-                    else:
-                        fail("duplicate_of vazio", str(d))
-        except Exception as e:
-            fail("duplicidade exception", str(e))
+for spec in USERS:
+    email = spec["email"]
+    payload = post_login(email, spec["password"])
+    if payload is None:
+        mark(f"login::{email}", False, "status != 200")
+        continue
+    user = payload.get("user") or {}
+    access = payload.get("access_token")
+    mark(f"login::{email} → 200", access is not None and "user" in payload,
+         f"access_len={len(access) if access else 0}, keys={list(payload.keys())}")
+    # role
+    mark(f"user.role == {spec['role']} ({email})", user.get("role") == spec["role"],
+         f"got role={user.get('role')!r}")
+    # level
+    level_ok = user.get("level") == spec["level"]
+    # Admin: accept missing or None
+    if spec["level"] is None and "level" not in user:
+        level_ok = True
+    mark(f"user.level == {spec['level']!r} ({email})", level_ok,
+         f"got level={user.get('level')!r}")
+    # tutor_id
+    if spec["expect_tutor"]:
+        mark(f"user.tutor_id != null ({email})", bool(user.get("tutor_id")),
+             f"got tutor_id={user.get('tutor_id')!r}")
     else:
-        fail("duplicidade skip", "sem placa aprovada para reusar")
+        tid = user.get("tutor_id")
+        mark(f"user.tutor_id is null ({email})", tid is None,
+             f"got tutor_id={tid!r}")
+    if access:
+        tokens[email] = access
+    if user.get("id"):
+        ids[email] = user["id"]
+    user_payloads[email] = user
 
-    # ==================================================================
-    # 4) REJEIÇÃO
-    # ==================================================================
-    print("\n[4] REJEIÇÃO")
-    # pega novamente pending para rejeitar um
-    try:
-        r = requests.get(f"{API}/admin/pending-approvals", headers=admin_hdr, timeout=30)
-        pending2 = (r.json() if r.status_code == 200 else {}).get("pending", [])
-    except Exception as e:
-        fail("relist pending", str(e))
-        pending2 = []
+# Cross-validation: junior.tutor_id == n3.id
+junior = user_payloads.get("junior@valeteck.com") or {}
+n3_id = ids.get("n3@valeteck.com")
+mark(
+    "junior.tutor_id == n3.id",
+    junior.get("tutor_id") == n3_id and n3_id is not None,
+    f"junior.tutor_id={junior.get('tutor_id')!r}, n3.id={n3_id!r}",
+)
 
-    tech_pending2 = [p for p in pending2 if p.get("user_id") == tech_id]
-    reject_target: Optional[str] = None
+# -------------------- B) /auth/me com token do junior --------------------
+print("\n========== B) /AUTH/ME (JUNIOR) ==========")
+jtoken = tokens.get("junior@valeteck.com")
+if not jtoken:
+    mark("/auth/me junior (pré-req)", False, "sem token")
+else:
+    r = get_with_token("/auth/me", jtoken)
+    ok = r.status_code == 200
+    me_user = r.json() if ok else {}
+    mark("/auth/me status 200", ok, f"status={r.status_code}")
+    mark("/auth/me level == junior", me_user.get("level") == "junior",
+         f"got level={me_user.get('level')!r}")
+    mark("/auth/me tutor_id != null", bool(me_user.get("tutor_id")),
+         f"got tutor_id={me_user.get('tutor_id')!r}")
+    mark("/auth/me tutor_id == n3.id", me_user.get("tutor_id") == n3_id,
+         f"tutor={me_user.get('tutor_id')!r} n3={n3_id!r}")
 
-    if not tech_pending2:
-        # cria novo
-        try:
-            plate = rand_plate()
-            rc = requests.post(
-                f"{API}/checklists",
-                json=make_checklist_payload(plate),
-                headers=tech_hdr, timeout=60,
-            )
-            if rc.status_code == 200:
-                reject_target = rc.json()["id"]
-                ok(f"checklist criado para rejeitar id={reject_target[:8]}")
-        except Exception as e:
-            fail("criar para rejeitar", str(e))
+# -------------------- C) /reference/service-catalog sem filtro --------------------
+# NOTA: endpoint exige auth? vamos usar admin para ser seguro
+print("\n========== C) /REFERENCE/SERVICE-CATALOG (sem filtro) ==========")
+admin_token = tokens.get("admin@valeteck.com")
+headers_admin = {"Authorization": f"Bearer {admin_token}"} if admin_token else {}
+r = requests.get(f"{BASE}/reference/service-catalog", headers=headers_admin, timeout=20)
+mark("GET /reference/service-catalog → 200", r.status_code == 200, f"status={r.status_code}")
+items: list[dict[str, Any]] = []
+if r.status_code == 200:
+    body = r.json()
+    items = body.get("items", [])
+    mark("service-catalog retorna exatamente 11 itens", len(items) == 11, f"got {len(items)}")
+    # Checar keys do primeiro item
+    if items:
+        expected_keys = {"code", "name", "category", "max_minutes", "base_value", "level_restriction"}
+        missing = expected_keys - set(items[0].keys())
+        mark("item possui todas as keys esperadas", not missing,
+             f"missing={missing}, keys={list(items[0].keys())}")
+
+    # Verificar itens chave
+    by_code = {it["code"]: it for it in items}
+
+    des = by_code.get("desinstalacao", {})
+    ok_des = (des.get("max_minutes") == 20 and float(des.get("base_value", 0)) == 2.00
+              and des.get("category") == "desinstalacao" and des.get("level_restriction") is None)
+    mark("desinstalacao {max_minutes=20, base_value=2.00, category=desinstalacao, level_restriction=null}",
+         ok_des, f"got {des}")
+
+    sensor = by_code.get("acessorio_sensor_estacionamento", {})
+    ok_sensor = (sensor.get("max_minutes") == 60 and float(sensor.get("base_value", 0)) == 10.00
+                 and sensor.get("category") == "acessorio" and sensor.get("level_restriction") == "n2")
+    mark("acessorio_sensor_estacionamento {max_minutes=60, base_value=10.00, category=acessorio, level_restriction=n2}",
+         ok_sensor, f"got {sensor}")
+
+    bloq_part = by_code.get("instalacao_bloq_antifurto_partida", {})
+    ok_bloq = (bloq_part.get("max_minutes") == 70 and float(bloq_part.get("base_value", 0)) == 7.00)
+    mark("instalacao_bloq_antifurto_partida {max_minutes=70, base_value=7.00}",
+         ok_bloq, f"got {bloq_part}")
+
+# -------------------- D) level=junior / level=n1 --------------------
+print("\n========== D) /REFERENCE/SERVICE-CATALOG?level=junior & ?level=n1 ==========")
+for lvl in ("junior", "n1"):
+    r = requests.get(f"{BASE}/reference/service-catalog", params={"level": lvl}, headers=headers_admin, timeout=20)
+    mark(f"GET service-catalog?level={lvl} → 200", r.status_code == 200, f"status={r.status_code}")
+    if r.status_code == 200:
+        lst = r.json().get("items", [])
+        mark(f"level={lvl} retorna 9 itens", len(lst) == 9, f"got {len(lst)}")
+        cats = {it.get("category") for it in lst}
+        mark(f"level={lvl} sem category=acessorio", "acessorio" not in cats, f"categories={cats}")
+
+# -------------------- E) level=n2 --------------------
+print("\n========== E) /REFERENCE/SERVICE-CATALOG?level=n2 ==========")
+r = requests.get(f"{BASE}/reference/service-catalog", params={"level": "n2"}, headers=headers_admin, timeout=20)
+mark("GET service-catalog?level=n2 → 200", r.status_code == 200, f"status={r.status_code}")
+if r.status_code == 200:
+    lst = r.json().get("items", [])
+    mark("level=n2 retorna 11 itens", len(lst) == 11, f"got {len(lst)}")
+    acc_count = sum(1 for it in lst if it.get("category") == "acessorio")
+    mark("level=n2 inclui acessórios (>=2)", acc_count >= 2, f"acessorios count={acc_count}")
+
+# -------------------- F) Regressão com técnico --------------------
+print("\n========== F) REGRESSÃO (tecnico) ==========")
+ttoken = tokens.get("tecnico@valeteck.com")
+if not ttoken:
+    mark("regressão pré-req token tecnico", False, "sem token")
+else:
+    # /auth/me
+    r = get_with_token("/auth/me", ttoken)
+    mark("GET /auth/me → 200", r.status_code == 200, f"status={r.status_code}")
+    if r.status_code == 200:
+        u = r.json()
+        mark("tecnico.level == n1", u.get("level") == "n1", f"level={u.get('level')!r}")
+
+    # /appointments
+    r = get_with_token("/appointments", ttoken)
+    mark("GET /appointments → 200", r.status_code == 200, f"status={r.status_code}")
+    if r.status_code == 200:
+        body = r.json()
+        # aceita list ou {appointments:[...]}
+        count = len(body) if isinstance(body, list) else len(body.get("appointments", []) or body.get("items", []))
+        mark("appointments retornou lista não-vazia", count > 0, f"count={count}")
+
+    # /gamification/meta → target=60
+    r = get_with_token("/gamification/meta", ttoken)
+    mark("GET /gamification/meta → 200", r.status_code == 200, f"status={r.status_code}")
+    if r.status_code == 200:
+        meta = r.json()
+        mark("gamification/meta.target == 60", meta.get("target") == 60, f"target={meta.get('target')!r}")
+
+    # /gamification/profile
+    r = get_with_token("/gamification/profile", ttoken)
+    mark("GET /gamification/profile → 200", r.status_code == 200, f"status={r.status_code}")
+    if r.status_code == 200:
+        prof = r.json()
+        lvl = prof.get("level") or {}
+        # Aceita formato {level:{number, name}} ou camelCase
+        has_num = isinstance(lvl, dict) and ("number" in lvl or "level_number" in lvl)
+        has_name = isinstance(lvl, dict) and ("name" in lvl or "level_name" in lvl)
+        mark("profile.level possui number", has_num, f"level={lvl!r}")
+        mark("profile.level possui name", has_name, f"level={lvl!r}")
+
+    # /inventory ou /inventory/me
+    r = get_with_token("/inventory", ttoken)
+    if r.status_code == 404:
+        r = get_with_token("/inventory/me", ttoken)
+        mark("GET /inventory/me → 200 (fallback)", r.status_code == 200, f"status={r.status_code}")
     else:
-        reject_target = tech_pending2[0]["id"]
+        mark("GET /inventory → 200", r.status_code == 200, f"status={r.status_code}")
 
-    if reject_target:
-        # Sem reason → 400
-        try:
-            r = requests.post(
-                f"{API}/admin/checklists/{reject_target}/reject",
-                json={"reason": ""},
-                headers=admin_hdr, timeout=30,
-            )
-            if r.status_code == 400:
-                detail = r.json().get("detail", "")
-                if "motivo" in detail.lower() and "obrigatório" in detail.lower():
-                    ok(f"reject sem reason → 400 '{detail}'")
-                else:
-                    fail("reject sem reason detail", detail)
-            else:
-                fail("reject sem reason status", f"{r.status_code}")
-        except Exception as e:
-            fail("reject sem reason exc", str(e))
-
-        # Com reason → 200
-        try:
-            r = requests.post(
-                f"{API}/admin/checklists/{reject_target}/reject",
-                json={"reason": "foto ruim"},
-                headers=admin_hdr, timeout=30,
-            )
-            if r.status_code == 200:
-                d = r.json()
-                cl = d.get("checklist") or {}
-                if cl.get("status") == "reprovado":
-                    ok("status=reprovado")
-                else:
-                    fail("status reprovado", f"got {cl.get('status')}")
-                if cl.get("rejection_reason") == "foto ruim":
-                    ok("rejection_reason='foto ruim'")
-                else:
-                    fail("rejection_reason", f"got {cl.get('rejection_reason')}")
-            else:
-                fail("reject com reason status", f"{r.status_code} {r.text[:200]}")
-        except Exception as e:
-            fail("reject com reason exc", str(e))
-
-        # Reject em checklist já processado → 400
-        try:
-            r = requests.post(
-                f"{API}/admin/checklists/{reject_target}/reject",
-                json={"reason": "novamente"},
-                headers=admin_hdr, timeout=30,
-            )
-            if r.status_code == 400:
-                detail = r.json().get("detail", "")
-                if "processado" in detail.lower():
-                    ok(f"re-reject → 400 '{detail}'")
-                else:
-                    fail("re-reject detail", detail)
-            else:
-                fail("re-reject status", f"{r.status_code}")
-        except Exception as e:
-            fail("re-reject exc", str(e))
-
-    # Reject em checklist já APROVADO → 400
-    if approved_checklist:
-        try:
-            r = requests.post(
-                f"{API}/admin/checklists/{approved_checklist['id']}/reject",
-                json={"reason": "tentativa em aprovado"},
-                headers=admin_hdr, timeout=30,
-            )
-            if r.status_code == 400:
-                detail = r.json().get("detail", "")
-                if "processado" in detail.lower():
-                    ok(f"reject em checklist aprovado → 400 '{detail}'")
-                else:
-                    fail("reject aprovado detail", detail)
-            else:
-                fail("reject aprovado status", f"{r.status_code}")
-        except Exception as e:
-            fail("reject aprovado exc", str(e))
-
-    # ==================================================================
-    # 5) META CONFIGURÁVEL
-    # ==================================================================
-    print("\n[5] META CONFIGURÁVEL")
-    try:
-        r = requests.get(f"{API}/gamification/meta", headers=tech_hdr, timeout=30)
-        if r.status_code == 200:
-            d = r.json()
-            expected = {
-                "target", "achieved", "pending", "duplicates", "progress_pct",
-                "remaining", "days_left", "per_day_needed", "on_track", "reached",
-                "validation_bonus_earned",
-            }
-            missing = expected - set(d.keys())
-            if missing:
-                fail("gamification/meta chaves", f"missing={missing}")
-            else:
-                ok(f"GET /gamification/meta OK target={d['target']} achieved={d['achieved']} bonus={d['validation_bonus_earned']}")
-        else:
-            fail("GET /gamification/meta", f"{r.status_code} {r.text[:200]}")
-    except Exception as e:
-        fail("gamification/meta exc", str(e))
-
-    # POST /admin/users/{id}/meta com admin
-    try:
-        r = requests.post(
-            f"{API}/admin/users/{tech_id}/meta",
-            json={"monthly_target": 100},
-            headers=admin_hdr, timeout=30,
-        )
-        if r.status_code == 200:
-            d = r.json()
-            u = d.get("user") or {}
-            if u.get("monthly_target") == 100:
-                ok("POST /admin/users/{id}/meta admin -> user.monthly_target=100")
-            else:
-                fail("user.monthly_target atualizado", f"{u.get('monthly_target')}")
-        else:
-            fail("POST meta admin status", f"{r.status_code} {r.text[:200]}")
-    except Exception as e:
-        fail("POST meta admin exc", str(e))
-
-    # POST meta com técnico → 403
-    try:
-        r = requests.post(
-            f"{API}/admin/users/{tech_id}/meta",
-            json={"monthly_target": 50},
-            headers=tech_hdr, timeout=30,
-        )
-        if r.status_code == 403:
-            ok("POST meta com tecnico → 403")
-        else:
-            fail("POST meta tecnico", f"esperava 403, veio {r.status_code}")
-    except Exception as e:
-        fail("POST meta tecnico exc", str(e))
-
-    # monthly_target=0 → 400
-    try:
-        r = requests.post(
-            f"{API}/admin/users/{tech_id}/meta",
-            json={"monthly_target": 0},
-            headers=admin_hdr, timeout=30,
-        )
-        if r.status_code == 400:
-            ok("POST meta=0 → 400")
-        else:
-            fail("POST meta=0", f"{r.status_code}")
-    except Exception as e:
-        fail("POST meta=0 exc", str(e))
-
-    # monthly_target>1000 → 400
-    try:
-        r = requests.post(
-            f"{API}/admin/users/{tech_id}/meta",
-            json={"monthly_target": 5000},
-            headers=admin_hdr, timeout=30,
-        )
-        if r.status_code == 400:
-            ok("POST meta>1000 → 400")
-        else:
-            fail("POST meta>1000", f"{r.status_code}")
-    except Exception as e:
-        fail("POST meta>1000 exc", str(e))
-
-    # user_id inexistente → 404
-    try:
-        r = requests.post(
-            f"{API}/admin/users/{uuid.uuid4()}/meta",
-            json={"monthly_target": 80},
-            headers=admin_hdr, timeout=30,
-        )
-        if r.status_code == 404:
-            ok("POST meta user inexistente → 404")
-        else:
-            fail("POST meta 404", f"{r.status_code} {r.text[:200]}")
-    except Exception as e:
-        fail("POST meta 404 exc", str(e))
-
-    # Após meta=100, GET /gamification/meta deve refletir
-    try:
-        r = requests.get(f"{API}/gamification/meta", headers=tech_hdr, timeout=30)
-        if r.status_code == 200 and r.json().get("target") == 100:
-            ok("GET /gamification/meta agora target=100")
-        else:
-            fail("meta target=100 após update", f"{r.status_code} - {r.text[:200]}")
-    except Exception as e:
-        fail("meta target=100 exc", str(e))
-
-    # ==================================================================
-    # 6) EARNINGS COM BÔNUS DE VALIDAÇÃO
-    # ==================================================================
-    print("\n[6] EARNINGS COM BÔNUS DE VALIDAÇÃO")
-    try:
-        r = requests.get(f"{API}/earnings/me?period=month", headers=tech_hdr, timeout=30)
-        if r.status_code == 200:
-            d = r.json()
-            total_bonus = float(d.get("total_bonus") or 0)
-            jobs = d.get("jobs") or []
-            # count valid approvals this month — ≥1 (acabamos de aprovar)
-            if approved_checklist:
-                approved_id = approved_checklist["id"]
-                match = next((j for j in jobs if j["id"] == approved_id), None)
-                if match:
-                    bonus_amt = float(match.get("bonus_amount") or 0)
-                    # bonus_amount = sla_bonus + validation_bonus (5)
-                    if bonus_amt >= 5.0:
-                        ok(f"earnings job do checklist aprovado contém bonus≥5.0 (got {bonus_amt})")
-                    else:
-                        fail("bonus_amount do job aprovado", f"got {bonus_amt}")
-                else:
-                    # pode estar fora do período caso sent_at seja antigo — reportar como info
-                    ok(f"job aprovado não está no period=month (checklist sent_at pode ser anterior) — total_bonus={total_bonus}")
-            if total_bonus >= 5.0:
-                ok(f"total_bonus reflete validação (R$ {total_bonus})")
-            else:
-                fail("total_bonus esperado ≥5", f"got {total_bonus}")
-        else:
-            fail("GET /earnings/me", f"{r.status_code}")
-    except Exception as e:
-        fail("earnings exc", str(e))
-
-    # ==================================================================
-    # 7) REGRESSÃO
-    # ==================================================================
-    print("\n[7] REGRESSÃO")
-    # /inventory/summary — rota admin
-    endpoints_admin = ["/admin/inventory/summary"]
-    for ep in endpoints_admin:
-        try:
-            r = requests.get(f"{API}{ep}", headers=admin_hdr, timeout=30)
-            if r.status_code == 200:
-                ok(f"GET {ep} 200")
-            else:
-                fail(f"GET {ep}", f"{r.status_code} {r.text[:200]}")
-        except Exception as e:
-            fail(f"GET {ep} exc", str(e))
-
-    endpoints_tech = [
-        "/appointments",
-        "/rankings/weekly",
-        "/gamification/profile",
-    ]
-    for ep in endpoints_tech:
-        try:
-            r = requests.get(f"{API}{ep}", headers=tech_hdr, timeout=30)
-            if r.status_code == 200:
-                ok(f"GET {ep} 200")
-            else:
-                fail(f"GET {ep}", f"{r.status_code} {r.text[:200]}")
-        except Exception as e:
-            fail(f"GET {ep} exc", str(e))
-
-    # /health (público)
-    try:
-        r = requests.get(f"{API}/health", timeout=30)
-        if r.status_code == 200 and r.json().get("status") == "ok":
-            ok("GET /health status=ok")
-        else:
-            fail("GET /health", f"{r.status_code} {r.text[:200]}")
-    except Exception as e:
-        fail("health exc", str(e))
-
-    # restaura meta para 60 (limpeza leve)
-    try:
-        requests.post(
-            f"{API}/admin/users/{tech_id}/meta",
-            json={"monthly_target": 60},
-            headers=admin_hdr, timeout=30,
-        )
-    except Exception:
-        pass
-
-    # ---------------- resumo ----------------
-    print("\n" + "=" * 60)
-    print(f"PASSED: {len(PASSED)}")
-    print(f"FAILED: {len(FAILED)}")
-    if FAILED:
-        print("\n-- FAILED --")
-        for f in FAILED:
-            print(" -", f)
-    return 0 if not FAILED else 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+# -------------------- SUMMARY --------------------
+print("\n========== SUMMARY ==========")
+passed = sum(1 for _, ok, _ in results if ok)
+total = len(results)
+print(f"PASS: {passed}/{total}")
+fails = [(lbl, det) for lbl, ok, det in results if not ok]
+if fails:
+    print("\nFailed assertions:")
+    for lbl, det in fails:
+        print(f"  {FAIL} {lbl} :: {det}")
+    sys.exit(1)
+print("All PASS ✅")

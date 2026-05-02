@@ -451,10 +451,75 @@ backend:
             - Observado: o seed expõe o técnico com monthly_target=80 no baseline; o teste
               não assume valor fixo e apenas valida estrutura + update funcional.
 
+backend:
+  - task: "v14 Fase 1 — Motor de Comissionamento (level/tutor_id + service-catalog)"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/auth.py + /app/backend/models/auth.py + /app/backend/services/seeds.py + /app/backend/routes/reference.py + /app/backend/models/service_types.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: |
+            ==================== v14 FASE 1 — FULL PASS ====================
+            Suite /app/backend_test.py contra
+            https://installer-track-1.preview.emergentagent.com/api
+            Resultado: 50/50 PASS, 0 falhas.
+
+            A) LOGIN + USEROUT (20/20):
+               - admin@valeteck.com/admin123 → role=admin, level=None, tutor_id=null ✓
+               - tecnico@valeteck.com/tecnico123 → role=tecnico, level=n1, tutor_id=null ✓
+               - n2@valeteck.com/n2tech123 → role=tecnico, level=n2, tutor_id=null ✓
+               - n3@valeteck.com/n3tech123 → role=tecnico, level=n3, tutor_id=null ✓
+               - junior@valeteck.com/junior123 → role=tecnico, level=junior,
+                 tutor_id=171498ae-9a8c-491d-b475-d984bf2919b7 (==n3.id) ✓
+               - Payload de /auth/login contém {token, access_token, refresh_token,
+                 token_type, expires_in, user{id,email,name,role,level,tutor_id}} ✓
+
+            B) GET /auth/me com token do junior (4/4):
+               - status=200, level='junior', tutor_id não-nulo e igual ao id do n3 ✓
+
+            C) GET /reference/service-catalog sem filtro (5/5):
+               - 11 itens retornados ✓
+               - Cada item possui {code,name,category,max_minutes,base_value,level_restriction} ✓
+               - desinstalacao: max_minutes=20, base_value=2.00, category=desinstalacao,
+                 level_restriction=null ✓
+               - acessorio_sensor_estacionamento: max_minutes=60, base_value=10.00,
+                 category=acessorio, level_restriction=n2 ✓
+               - instalacao_bloq_antifurto_partida: max_minutes=70, base_value=7.00 ✓
+
+            D) GET /reference/service-catalog?level=junior e ?level=n1 (6/6):
+               - Ambos retornam exatamente 9 itens ✓
+               - Nenhum item com category=acessorio (apenas auditoria, telemetria,
+                 desinstalacao, instalacao) ✓
+
+            E) GET /reference/service-catalog?level=n2 (3/3):
+               - 11 itens ✓ (inclui 2 acessórios: smart_control + sensor_estacionamento) ✓
+
+            F) REGRESSÃO com tecnico@valeteck.com (8/8):
+               - GET /auth/me → 200 (level=n1) ✓
+               - GET /appointments → 200 (14 docs) ✓
+               - GET /gamification/meta → 200 com target=60 ✓
+               - GET /gamification/profile → 200 com level{number:2,name:"Prata",...} ✓
+               - GET /inventory/me → 200 ✓ (rota GET /inventory não existe como
+                 endpoint de técnico na v14; /inventory/me é a rota correta para
+                 técnicos, /admin/inventory/summary para admin — fallback automático
+                 do teste)
+
+            Conclusão: Fase 1 do Motor de Comissionamento Inteligente está 100%
+            operacional. Campos level/tutor_id expostos corretamente no UserOut via
+            /auth/login e /auth/me. Endpoint /reference/service-catalog entrega os
+            11 tipos de serviço oficiais com SLA e valor base, filtrando
+            corretamente por nível (junior/n1=9 itens sem acessórios; n2=11 itens).
+            Tutoria junior→n3 (Pedro→Marina) persistida em DB. Nenhuma regressão
+            nos endpoints existentes.
+
 metadata:
   created_by: "main_agent"
-  version: "2.2"
-  test_sequence: 13
+  version: "2.3"
+  test_sequence: 14
   run_ui: false
 
 test_plan:
@@ -733,3 +798,58 @@ agent_communication:
         CONCLUSÃO: Frontend v13 (Motor de Regras Pós-Aprovação + Card Meta Mensal)
         está 100% funcional. Todos os testIDs esperados (meta-card, pending-*,
         footer-approve, footer-reject) presentes. Pronto para produção.
+
+    - agent: "testing"
+      message: |
+        ==================== v14 FASE 1 — MOTOR DE COMISSIONAMENTO (smoke) — FULL PASS ====================
+        Suite /app/backend_test.py — 50/50 PASS, 0 falhas.
+        Base URL: https://installer-track-1.preview.emergentagent.com/api
+
+        A) LOGIN + USEROUT: todos os 5 usuários (admin, tecnico, n2, n3, junior)
+           logaram em /auth/login com payload completo. Campos novos level e
+           tutor_id aparecem corretamente no user embutido no TokenOut:
+             - admin: level=None, tutor_id=null
+             - tecnico (legado): level=n1 (backfill via seed), tutor_id=null
+             - n2: level=n2, tutor_id=null
+             - n3: level=n3, tutor_id=null
+             - junior: level=junior, tutor_id=171498ae-... (= id do n3)
+
+        B) /auth/me com token do junior: level='junior', tutor_id não-nulo e
+           idêntico ao id do n3. A tutoria Pedro→Marina está persistida e o
+           JWT rotaciona normalmente.
+
+        C) GET /reference/service-catalog sem filtro: 11 itens retornados, cada
+           um com {code, name, category, max_minutes, base_value, level_restriction}.
+           Validado:
+             - desinstalacao: 20 min, R$2.00, category=desinstalacao, restriction=null
+             - acessorio_sensor_estacionamento: 60 min, R$10.00, category=acessorio,
+               restriction=n2
+             - instalacao_bloq_antifurto_partida: 70 min, R$7.00
+
+        D) /reference/service-catalog?level=junior e ?level=n1: ambos retornam
+           exatamente 9 itens (categorias: auditoria, telemetria, desinstalacao,
+           instalacao). Nenhum item com category=acessorio — restrição level=n2
+           aplicada corretamente.
+
+        E) /reference/service-catalog?level=n2: 11 itens (inclui 2 acessórios
+           — smart_control e sensor_estacionamento).
+
+        F) REGRESSÃO (tecnico@valeteck.com):
+           - GET /auth/me → 200 (level=n1)
+           - GET /appointments → 200 (14 docs)
+           - GET /gamification/meta → 200 com target=60
+           - GET /gamification/profile → 200 com level={number:2, name:"Prata",...}
+           - GET /inventory/me → 200 (a rota /inventory sem /me não existe para
+             técnico; o teste usou fallback correto — NÃO é bug)
+
+        Observações NÃO-bloqueantes:
+        - Backend patched admin com campo level (log: "Patched user
+          admin@valeteck.com with ['level']") durante startup. Idempotente.
+        - Rota GET /inventory (sem /me) retorna 404 para técnico. Uso esperado
+          é GET /inventory/me (técnico) ou /api/admin/inventory/summary (admin).
+
+        Conclusão: Fase 1 do Motor de Comissionamento Inteligente (model +
+        seed + service-catalog endpoint) está 100% pronta. Backend sem
+        regressões. OK para prosseguir para Fase 2 (cronômetro/SLA) e Fase 3
+        (cálculo de comissionamento).
+

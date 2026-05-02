@@ -12,6 +12,8 @@ class UserOut(BaseModel):
     email: EmailStr
     name: str
     role: str
+    level: Optional[str] = None            # junior | n1 | n2 | n3 (None para admin)
+    tutor_id: Optional[str] = None          # N3 supervisor (aplica-se a juniores)
 
 
 class TokenOut(BaseModel):
